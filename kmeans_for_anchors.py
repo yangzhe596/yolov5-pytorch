@@ -103,6 +103,37 @@ def load_data(path):
             data.append([xmax-xmin,ymax-ymin])
     return np.array(data)
 
+
+def load_data_txt(path):
+    width_height_list = []
+
+    with open(path, 'r') as file:
+        for line in file:
+            parts = line.strip().split(' ', 1)
+            if len(parts) < 2:
+                continue 
+
+            box_info_str = parts[1]
+
+            boxes = box_info_str.split()
+
+            for box in boxes:
+                box_parts = box.split(',')
+                if len(box_parts) != 7:
+                    continue
+                x_min, y_min, x_max, y_max,_,img_w, img_h = map(int, box_parts[:7])
+                x_min /= img_w
+                y_min /= img_h
+                x_max /= img_w
+                y_max /= img_h
+
+                width = x_max - x_min
+                height = y_max - y_min
+
+                width_height_list.append((width, height))
+
+    return np.array(width_height_list)
+
 if __name__ == '__main__':
     np.random.seed(0)
     #-------------------------------------------------------------#
@@ -111,18 +142,23 @@ if __name__ == '__main__':
     #-------------------------------------------------------------#
     input_shape = [640, 640]
     anchors_num = 9
+
+    train_data = load_data_txt("/home/yangzhe/code/dataset/drone_vs_bird/train.txt")
+    test_data = load_data_txt("/home/yangzhe/code/dataset/drone_vs_bird/test.txt")
+    data = np.vstack((train_data, test_data))
     #-------------------------------------------------------------#
     #   载入数据集，可以使用VOC的xml
     #-------------------------------------------------------------#
-    path        = 'VOCdevkit/VOC2007/Annotations'
+    # path        = '../dataset/voc/VOCdevkit/VOC2007/Annotations'
     
-    #-------------------------------------------------------------#
-    #   载入所有的xml
-    #   存储格式为转化为比例后的width,height
-    #-------------------------------------------------------------#
-    print('Load xmls.')
-    data = load_data(path)
-    print('Load xmls done.')
+    # #-------------------------------------------------------------#
+    # #   载入所有的xml
+    # #   存储格式为转化为比例后的width,height
+    # #-------------------------------------------------------------#
+    # print('Load xmls.')
+    # data = load_data(path)
+    # print(data)
+    # print('Load xmls done.')
     
     #-------------------------------------------------------------#
     #   使用k聚类算法
@@ -147,7 +183,7 @@ if __name__ == '__main__':
     print('avg_ratio:{:.2f}'.format(avg_ratio(data, cluster)))
     print(cluster)
 
-    f = open("yolo_anchors.txt", 'w')
+    f = open("yolo_anchors2.txt", 'w')
     row = np.shape(cluster)[0]
     for i in range(row):
         if i == 0:

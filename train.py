@@ -70,16 +70,12 @@ if __name__ == "__main__":
     #               可减少约一半的显存、需要pytorch1.7.1以上
     #---------------------------------------------------------------------#
     fp16            = False
-    #---------------------------------------------------------------------#
-    #   classes_path    指向model_data下的txt，与自己训练的数据集相关 
-    #                   训练前一定要修改classes_path，使其对应自己的数据集
-    #---------------------------------------------------------------------#
-    classes_path    = 'model_data/voc_classes.txt'
+
     #---------------------------------------------------------------------#
     #   anchors_path    代表先验框对应的txt文件，一般不修改。
     #   anchors_mask    用于帮助代码找到对应的先验框，一般不修改。
     #---------------------------------------------------------------------#
-    anchors_path    = 'model_data/yolo_anchors.txt'
+    anchors_path    = 'datasets/voc/yolo_anchors.txt'
     anchors_mask    = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
     #----------------------------------------------------------------------------------------------------------------------------#
     #   权值文件的下载请看README，可以通过网盘下载。模型的 预训练权重 对不同数据集是通用的，因为特征是通用的。
@@ -100,7 +96,8 @@ if __name__ == "__main__":
     #      可以设置mosaic=True，直接随机初始化参数开始训练，但得到的效果仍然不如有预训练的情况。（像COCO这样的大数据集可以这样做）
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
-    model_path      = 'model_data/yolov5_s.pth'
+    # model_path      = 'model_data/yolov5_s.pth'
+    model_path = ''
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -118,7 +115,7 @@ if __name__ == "__main__":
     #                   如果不设置model_path，pretrained = True，此时仅加载主干开始训练。
     #                   如果不设置model_path，pretrained = False，Freeze_Train = Fasle，此时从0开始训练，且没有冻结主干的过程。
     #----------------------------------------------------------------------------------------------------------------------------#
-    pretrained      = False
+    pretrained      = True
     #------------------------------------------------------#
     #   phi             所使用的YoloV5的版本。s、m、l、x
     #                   在除cspdarknet的其它主干中仅影响panet的大小
@@ -185,6 +182,13 @@ if __name__ == "__main__":
     Freeze_Epoch        = 50
     Freeze_batch_size   = 16
     #------------------------------------------------------------------#
+    #   num_workers     用于设置是否使用多线程读取数据
+    #                   开启后会加快数据读取速度，但是会占用更多内存
+    #                   内存较小的电脑可以设置为2或者0  
+    #------------------------------------------------------------------#
+    num_workers         = 16
+
+    #------------------------------------------------------------------#
     #   解冻阶段训练参数
     #   此时模型的主干不被冻结了，特征提取网络会发生改变
     #   占用的显存较大，网络所有的参数都会发生改变
@@ -194,7 +198,7 @@ if __name__ == "__main__":
     #   Unfreeze_batch_size     模型在解冻后的batch_size
     #------------------------------------------------------------------#
     UnFreeze_Epoch      = 300
-    Unfreeze_batch_size = 8
+    Unfreeze_batch_size = 16
     #------------------------------------------------------------------#
     #   Freeze_Train    是否进行冻结训练
     #                   默认先冻结主干训练后解冻训练。
@@ -244,19 +248,21 @@ if __name__ == "__main__":
     #------------------------------------------------------------------#
     eval_flag           = True
     eval_period         = 10
-    #------------------------------------------------------------------#
-    #   num_workers     用于设置是否使用多线程读取数据
-    #                   开启后会加快数据读取速度，但是会占用更多内存
-    #                   内存较小的电脑可以设置为2或者0  
-    #------------------------------------------------------------------#
-    num_workers         = 4
 
     #------------------------------------------------------#
     #   train_annotation_path   训练图片路径和标签
     #   val_annotation_path     验证图片路径和标签
     #------------------------------------------------------#
-    train_annotation_path   = '2007_train.txt'
-    val_annotation_path     = '2007_val.txt'
+    train_annotation_path   = 'datasets/voc/2007_train.txt'
+    val_annotation_path     = 'datasets/voc/2007_val.txt'
+    test_annotation_path    = 'datasets/voc/2007_val.txt'
+    #---------------------------------------------------------------------#
+    #   classes_path    指向model_data下的txt，与自己训练的数据集相关 
+    #                   训练前一定要修改classes_path，使其对应自己的数据集
+    #---------------------------------------------------------------------#
+    # classes_path    = 'datasets/drone_vs_bird/classes.txt'
+    # classes_path    = 'datasets/nps/classes.txt'
+    classes_path = "datasets/voc/voc_classes.txt"
 
     seed_everything(seed)
     #------------------------------------------------------#
@@ -385,8 +391,11 @@ if __name__ == "__main__":
         train_lines = f.readlines()
     with open(val_annotation_path, encoding='utf-8') as f:
         val_lines   = f.readlines()
+    with open(test_annotation_path, encoding='utf-8') as f:
+        test_lines   = f.readlines()        
     num_train   = len(train_lines)
     num_val     = len(val_lines)
+    num_test     = len(test_lines)
 
     if local_rank == 0:
         show_config(
@@ -506,7 +515,7 @@ if __name__ == "__main__":
         #   记录eval的map曲线
         #----------------------#
         if local_rank == 0:
-            eval_callback   = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, val_lines, log_dir, Cuda, \
+            eval_callback   = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, test_lines, log_dir, Cuda, \
                                             eval_flag=eval_flag, period=eval_period)
         else:
             eval_callback   = None
