@@ -4,6 +4,7 @@
 import datetime
 import os
 from functools import partial
+import argparse
 
 import numpy as np
 import torch
@@ -39,6 +40,11 @@ from utils.utils_fit import fit_one_epoch
    如果只是训练了几个Step是不会保存的，Epoch和Step的概念要捋清楚一下。
 '''
 if __name__ == "__main__":
+    # 添加命令行参数解析
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--eval_only', action='store_true', help='只进行评估，不进行训练')
+    args = parser.parse_args()
+
     #---------------------------------#
     #   Cuda    是否使用Cuda
     #           没有GPU可以设置成False
@@ -75,7 +81,7 @@ if __name__ == "__main__":
     #   anchors_path    代表先验框对应的txt文件，一般不修改。
     #   anchors_mask    用于帮助代码找到对应的先验框，一般不修改。
     #---------------------------------------------------------------------#
-    anchors_path    = 'datasets/voc/yolo_anchors.txt'
+    anchors_path    = 'datasets/nps/anchors.txt'
     anchors_mask    = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
     #----------------------------------------------------------------------------------------------------------------------------#
     #   权值文件的下载请看README，可以通过网盘下载。模型的 预训练权重 对不同数据集是通用的，因为特征是通用的。
@@ -97,7 +103,7 @@ if __name__ == "__main__":
     #   2、了解imagenet数据集，首先训练分类模型，获得网络的主干部分权值，分类模型的 主干部分 和该模型通用，基于此进行训练。
     #----------------------------------------------------------------------------------------------------------------------------#
     # model_path      = 'model_data/yolov5_s.pth'
-    model_path = ''
+    model_path = 'logs/best_epoch_weights.pth'
     #------------------------------------------------------#
     #   input_shape     输入的shape大小，一定要是32的倍数
     #------------------------------------------------------#
@@ -253,16 +259,19 @@ if __name__ == "__main__":
     #   train_annotation_path   训练图片路径和标签
     #   val_annotation_path     验证图片路径和标签
     #------------------------------------------------------#
-    train_annotation_path   = 'datasets/voc/2007_train.txt'
-    val_annotation_path     = 'datasets/voc/2007_val.txt'
-    test_annotation_path    = 'datasets/voc/2007_val.txt'
+    # train_annotation_path   = 'datasets/voc/2007_train.txt'
+    # val_annotation_path     = 'datasets/voc/2007_val.txt'
+    # test_annotation_path    = 'datasets/voc/2007_val.txt'
+    train_annotation_path   = 'datasets/nps/train.txt'
+    val_annotation_path     = 'datasets/nps/val.txt'
+    test_annotation_path    = 'datasets/nps/test.txt'
     #---------------------------------------------------------------------#
     #   classes_path    指向model_data下的txt，与自己训练的数据集相关 
     #                   训练前一定要修改classes_path，使其对应自己的数据集
     #---------------------------------------------------------------------#
     # classes_path    = 'datasets/drone_vs_bird/classes.txt'
-    # classes_path    = 'datasets/nps/classes.txt'
-    classes_path = "datasets/voc/voc_classes.txt"
+    classes_path    = 'datasets/nps/classes.txt'
+    # classes_path = "datasets/voc/voc_classes.txt"
 
     seed_everything(seed)
     #------------------------------------------------------#
@@ -521,65 +530,74 @@ if __name__ == "__main__":
             eval_callback   = None
         
         #---------------------------------------#
-        #   开始模型训练
+        #   开始模型训练或评估
         #---------------------------------------#
-        for epoch in range(Init_Epoch, UnFreeze_Epoch):
-            #---------------------------------------#
-            #   如果模型有冻结学习部分
-            #   则解冻，并设置参数
-            #---------------------------------------#
-            if epoch >= Freeze_Epoch and not UnFreeze_flag and Freeze_Train:
-                batch_size = Unfreeze_batch_size
-
-                #-------------------------------------------------------------------#
-                #   判断当前batch_size，自适应调整学习率
-                #-------------------------------------------------------------------#
-                nbs             = 64
-                lr_limit_max    = 1e-3 if optimizer_type == 'adam' else 5e-2
-                lr_limit_min    = 3e-4 if optimizer_type == 'adam' else 5e-4
-                Init_lr_fit     = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
-                Min_lr_fit      = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+        if args.eval_only:
+            # 只进行评估
+            model.eval()  # 设置模型为评估模式
+            with torch.no_grad():
+                # 这里可以添加评估代码，例如计算mAP等
+                eval_callback = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, test_lines, log_dir, Cuda, eval_flag=True, period=eval_period)
+                eval_callback.on_epoch_end(epoch=0, model_eval=model)  # 传递当前epoch和模型
+        else:
+            # 进行训练
+            for epoch in range(Init_Epoch, UnFreeze_Epoch):
                 #---------------------------------------#
-                #   获得学习率下降的公式
+                #   如果模型有冻结学习部分
+                #   则解冻，并设置参数
                 #---------------------------------------#
-                lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
+                if epoch >= Freeze_Epoch and not UnFreeze_flag and Freeze_Train:
+                    batch_size = Unfreeze_batch_size
 
-                for param in model.backbone.parameters():
-                    param.requires_grad = True
+                    #-------------------------------------------------------------------#
+                    #   判断当前batch_size，自适应调整学习率
+                    #-------------------------------------------------------------------#
+                    nbs             = 64
+                    lr_limit_max    = 1e-3 if optimizer_type == 'adam' else 5e-2
+                    lr_limit_min    = 3e-4 if optimizer_type == 'adam' else 5e-4
+                    Init_lr_fit     = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+                    Min_lr_fit      = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
+                    #---------------------------------------#
+                    #   获得学习率下降的公式
+                    #---------------------------------------#
+                    lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
 
-                epoch_step      = num_train // batch_size
-                epoch_step_val  = num_val // batch_size
+                    for param in model.backbone.parameters():
+                        param.requires_grad = True
 
-                if epoch_step == 0 or epoch_step_val == 0:
-                    raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
-                    
-                if ema:
-                    ema.updates     = epoch_step * epoch
+                    epoch_step      = num_train // batch_size
+                    epoch_step_val  = num_val // batch_size
+
+                    if epoch_step == 0 or epoch_step_val == 0:
+                        raise ValueError("数据集过小，无法继续进行训练，请扩充数据集。")
+                        
+                    if ema:
+                        ema.updates     = epoch_step * epoch
+
+                    if distributed:
+                        batch_size  = batch_size // ngpus_per_node
+                        
+                    gen             = DataLoader(train_dataset, shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
+                                                drop_last=True, collate_fn=yolo_dataset_collate, sampler=train_sampler, 
+                                                worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                    gen_val         = DataLoader(val_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
+                                                drop_last=True, collate_fn=yolo_dataset_collate, sampler=val_sampler, 
+                                                worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+
+                    UnFreeze_flag   = True
+
+                gen.dataset.epoch_now       = epoch
+                gen_val.dataset.epoch_now   = epoch
 
                 if distributed:
-                    batch_size  = batch_size // ngpus_per_node
-                    
-                gen             = DataLoader(train_dataset, shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True,
-                                            drop_last=True, collate_fn=yolo_dataset_collate, sampler=train_sampler, 
-                                            worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
-                gen_val         = DataLoader(val_dataset  , shuffle = shuffle, batch_size = batch_size, num_workers = num_workers, pin_memory=True, 
-                                            drop_last=True, collate_fn=yolo_dataset_collate, sampler=val_sampler, 
-                                            worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                    train_sampler.set_epoch(epoch)
 
-                UnFreeze_flag   = True
+                set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
 
-            gen.dataset.epoch_now       = epoch
-            gen_val.dataset.epoch_now   = epoch
+                fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
+                
+                if distributed:
+                    dist.barrier()
 
-            if distributed:
-                train_sampler.set_epoch(epoch)
-
-            set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
-
-            fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
-            
-            if distributed:
-                dist.barrier()
-
-        if local_rank == 0:
-            loss_history.writer.close()
+            if local_rank == 0:
+                loss_history.writer.close()
