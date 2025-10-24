@@ -70,6 +70,8 @@ class CocoYoloDataset(Dataset):
         self.image_infos = []
         for img in coco_data['images']:
             if img['id'] in img_to_anns:
+                # 支持相对路径格式（如 "序列0/PADDED_RGB/xxx.jpg"）
+                # image_dir 应该是 FRED 数据集的根目录
                 img_path = os.path.join(self.image_dir, img['file_name'])
                 
                 # 转换COCO bbox为VOC格式 [xmin, ymin, xmax, ymax, class_id]

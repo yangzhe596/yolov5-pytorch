@@ -45,7 +45,9 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_resu
     # 加载COCO标注
     coco_root = f'datasets/fred_coco/{modality}'
     ann_file = f'{coco_root}/annotations/instances_{split}.json'
-    img_dir = f'{coco_root}/{split}'
+    # 使用FRED数据集根目录（file_name包含相对路径）
+    fred_root = '/home/yz/datasets/fred'
+    img_dir = fred_root
     
     if not os.path.exists(ann_file):
         print(f"错误: 标注文件不存在 {ann_file}")

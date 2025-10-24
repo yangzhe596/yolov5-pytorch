@@ -35,9 +35,15 @@ if __name__ == "__main__":
                         help='只进行评估，不进行训练')
     parser.add_argument('--coco_root', type=str, default='datasets/fred_coco',
                         help='COCO数据集根目录')
-    parser.add_argument('--eval_map', action='store_true',
+    parser.add_argument('--eval_map', action='store_true', default=True,
                         help='是否计算mAP（会增加训练时间）')
+    parser.add_argument('--no_eval_map', action='store_true',
+                        help='禁用mAP评估以加快训练速度')
     args = parser.parse_args()
+    
+    # 如果指定了 --no_eval_map，则禁用mAP评估
+    if args.no_eval_map:
+        args.eval_map = False
     
     # 基本配置
     Cuda = True
@@ -61,10 +67,13 @@ if __name__ == "__main__":
     val_json = os.path.join(coco_root, 'annotations', 'instances_val.json')
     test_json = os.path.join(coco_root, 'annotations', 'instances_test.json')
     
-    # 图片目录
-    train_img_dir = os.path.join(coco_root, 'train')
-    val_img_dir = os.path.join(coco_root, 'val')
-    test_img_dir = os.path.join(coco_root, 'test')
+    # 图片目录（使用FRED数据集根目录，因为file_name包含相对路径）
+    # 例如: file_name = "0/PADDED_RGB/Video_0_16_03_03.363444.jpg"
+    # 完整路径 = fred_root / file_name
+    fred_root = '/home/yz/datasets/fred'  # FRED数据集根目录
+    train_img_dir = fred_root
+    val_img_dir = fred_root
+    test_img_dir = fred_root
     
     # 检查文件是否存在
     if not os.path.exists(train_json):
@@ -356,13 +365,13 @@ if __name__ == "__main__":
                     period=eval_period
                 )
                 print("\n✓ 使用COCO格式的mAP评估（会增加训练时间）")
+                print(f"  - 评估周期: 每 {eval_period} 个epoch")
+                print(f"  - 评估数据集: 测试集 ({test_json})")
             else:
                 # 使用简化版回调（只记录epoch，不计算mAP）
                 eval_callback = SimplifiedEvalCallback(log_dir, eval_flag=False, period=1)
-                if not args.eval_map:
-                    print("\n注意: mAP评估已禁用（使用--eval_map启用）")
-                else:
-                    print("\n注意: 评估已禁用")
+                print("\n注意: mAP评估已禁用（使用 --no_eval_map 禁用，默认启用）")
+                print("  - 如需加快训练速度，可使用: python train_fred.py --no_eval_map")
         else:
             eval_callback = SimplifiedEvalCallback(log_dir, eval_flag=False, period=1)
         

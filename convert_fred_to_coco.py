@@ -1,359 +1,452 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-将FRED数据集从YOLO格式转换为COCO格式
-支持RGB和Event两种模态
+从coordinates.txt重新生成FRED COCO数据集
+使用正确的数据源：
+- RGB图像：PADDED_RGB文件夹
+- Event图像：Event/Frames文件夹
+- 标注：coordinates.txt（时间戳: x1, y1, x2, y2）
 """
+
 import os
 import json
-import shutil
-import random
+import argparse
 from pathlib import Path
-from PIL import Image
 from datetime import datetime
+from collections import defaultdict
+import shutil
 from tqdm import tqdm
 
-# 配置
-FRED_ROOT = "/mnt/data/datasets/fred"
-OUTPUT_ROOT = "datasets/fred_coco"
-TRAIN_RATIO = 0.7  # 训练集比例
-VAL_RATIO = 0.2    # 验证集比例
-TEST_RATIO = 0.1   # 测试集比例
 
-# 类别定义
-CATEGORIES = [
-    {"id": 1, "name": "object", "supercategory": "none"}
-]
-
-def create_coco_structure(output_root, modality):
-    """创建COCO数据集目录结构"""
-    coco_root = Path(output_root) / modality
-    
-    # 创建必要的目录
-    dirs = [
-        coco_root / "annotations",
-        coco_root / "train",
-        coco_root / "val",
-        coco_root / "test",
-    ]
-    
-    for d in dirs:
-        d.mkdir(parents=True, exist_ok=True)
-    
-    return coco_root
-
-def yolo_to_coco_bbox(yolo_bbox, img_width, img_height):
+def parse_coordinates_file(coord_file):
     """
-    将YOLO格式边界框转换为COCO格式
-    YOLO: (x_center, y_center, width, height) - 归一化坐标
-    COCO: (x, y, width, height) - 像素坐标，其中(x,y)是左上角
+    解析coordinates.txt文件
+    格式: timestamp: x1, y1, x2, y2
+    
+    Returns:
+        dict: {timestamp: [x1, y1, x2, y2]}
     """
-    x_center, y_center, width, height = yolo_bbox
+    annotations = {}
     
-    # 转换为像素坐标
-    x_center_px = x_center * img_width
-    y_center_px = y_center * img_height
-    width_px = width * img_width
-    height_px = height * img_height
-    
-    # 计算左上角坐标
-    x = x_center_px - width_px / 2
-    y = y_center_px - height_px / 2
-    
-    # 确保坐标在图像范围内
-    x = max(0, x)
-    y = max(0, y)
-    width_px = min(width_px, img_width - x)
-    height_px = min(height_px, img_height - y)
-    
-    return [x, y, width_px, height_px]
-
-def collect_dataset_files(fred_root, modality):
-    """
-    收集所有有效的图片和标注文件对
-    modality: 'rgb' 或 'event'
-    """
-    file_pairs = []
-    fred_path = Path(fred_root)
-    
-    # 根据模态选择不同的目录
-    if modality.lower() == 'rgb':
-        img_subdir = "RGB"
-        label_subdir = "RGB_YOLO"
-        img_ext = ".jpg"
-    elif modality.lower() == 'event':
-        img_subdir = "Event/Frames"
-        label_subdir = "Event_YOLO"
-        img_ext = ".png"
-    else:
-        raise ValueError(f"不支持的模态: {modality}")
-    
-    # 遍历所有子目录（0-10）
-    for video_dir in sorted(fred_path.iterdir()):
-        if not video_dir.is_dir() or video_dir.name.startswith('.'):
-            continue
-        
-        img_dir = video_dir / img_subdir
-        yolo_dir = video_dir / label_subdir
-        
-        if not img_dir.exists() or not yolo_dir.exists():
-            print(f"  跳过 {video_dir.name}: 缺少{img_subdir}或{label_subdir}目录")
-            continue
-        
-        # 收集该视频序列的所有图片
-        pattern = f"*{img_ext}"
-        for img_file in img_dir.glob(pattern):
-            label_file = yolo_dir / (img_file.stem + ".txt")
+    with open(coord_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
             
-            # 只收集有标注的图片（标注文件存在且非空）
-            if label_file.exists() and label_file.stat().st_size > 0:
-                file_pairs.append({
-                    'image': str(img_file),
-                    'label': str(label_file),
-                    'video_id': video_dir.name,
-                    'filename': img_file.name
-                })
+            try:
+                # 分割时间戳和坐标
+                parts = line.split(':')
+                if len(parts) != 2:
+                    continue
+                
+                timestamp = float(parts[0].strip())
+                coords_str = parts[1].strip()
+                
+                # 解析坐标
+                coords = [float(x.strip()) for x in coords_str.split(',')]
+                if len(coords) == 4:
+                    annotations[timestamp] = coords
+            except Exception as e:
+                print(f"警告: 无法解析行 '{line}': {e}")
+                continue
     
-    return file_pairs
+    return annotations
 
-def split_dataset(file_pairs, train_ratio, val_ratio, test_ratio):
-    """划分数据集为训练集、验证集和测试集"""
-    random.shuffle(file_pairs)
-    
-    total = len(file_pairs)
-    train_end = int(total * train_ratio)
-    val_end = train_end + int(total * val_ratio)
-    
-    train_set = file_pairs[:train_end]
-    val_set = file_pairs[train_end:val_end]
-    test_set = file_pairs[val_end:]
-    
-    return {
-        'train': train_set,
-        'val': val_set,
-        'test': test_set
-    }
 
-def create_coco_annotation(file_list, coco_root, split_name, categories, modality):
-    """创建COCO格式的标注文件"""
+def extract_absolute_timestamp_from_filename(filename, modality='rgb'):
+    """
+    从文件名中提取时间戳（秒）
     
-    # 初始化COCO格式的数据结构
+    RGB: Video_0_16_03_03.363444.jpg -> 16*3600 + 03*60 + 03.363444 (绝对时间)
+    Event: Video_0_frame_100032333.png -> 100.032333 (相对时间，从Event相机开始录制时计时)
+    
+    注意：Event的时间戳是相对时间，但起始点与RGB不同
+    """
+    try:
+        if modality == 'rgb':
+            # Video_0_16_03_03.363444.jpg
+            parts = filename.replace('.jpg', '').split('_')
+            if len(parts) >= 5:
+                hours = int(parts[2])
+                minutes = int(parts[3])
+                seconds = float(parts[4])
+                timestamp = hours * 3600 + minutes * 60 + seconds
+                return timestamp
+        else:  # event
+            # Video_0_frame_100032333.png
+            # 时间戳是微秒数，转换为秒
+            parts = filename.replace('.png', '').split('_')
+            if len(parts) >= 3:
+                microseconds = int(parts[-1])
+                timestamp = microseconds / 1000000.0
+                return timestamp
+    except Exception as e:
+        print(f"警告: 无法从文件名 '{filename}' 提取时间戳: {e}")
+        return None
+    
+    return None
+
+
+def find_closest_annotation(relative_timestamp, annotations, tolerance=0.05):
+    """
+    找到最接近的标注
+    
+    Args:
+        relative_timestamp: 图像相对时间戳（秒）
+        annotations: {relative_timestamp: [x1, y1, x2, y2]}
+        tolerance: 时间容差（秒）
+    
+    Returns:
+        [x1, y1, x2, y2] or None
+    """
+    if not annotations:
+        return None
+    
+    # 找到最接近的时间戳
+    closest_time = min(annotations.keys(), key=lambda t: abs(t - relative_timestamp))
+    
+    # 检查是否在容差范围内
+    if abs(closest_time - relative_timestamp) <= tolerance:
+        return annotations[closest_time]
+    
+    return None
+
+
+def calculate_video_start_time(image_files, annotations, modality='rgb'):
+    """
+    计算视频的起始时间
+    
+    RGB模态：
+    - RGB的第一张图被认为是0时刻
+    - coordinates.txt中的时间戳是相对于第一张RGB图片的相对时间
+    - video_start_time = 第一张RGB图片的绝对时间
+    
+    Event模态：
+    - Event图像的时间戳（微秒转秒）和coordinates.txt中的时间戳（秒）完全对应
+    - 只需要单位转换，不需要计算起始时间
+    - 返回0（因为Event时间戳本身就是相对时间）
+    
+    Args:
+        image_files: 图像文件列表
+        annotations: {relative_time: bbox}
+        modality: 'rgb' or 'event'
+    
+    Returns:
+        start_time: 视频起始时间
+    """
+    if not image_files:
+        return None
+    
+    if modality == 'event':
+        # Event图像的时间戳已经是相对时间（与coordinates.txt对应）
+        # 不需要计算起始时间，返回0
+        return 0.0
+    
+    # RGB模态：获取第一张图像的绝对时间
+    first_image = sorted(image_files)[0]
+    first_image_abs_time = extract_absolute_timestamp_from_filename(first_image.name, modality)
+    
+    if first_image_abs_time is None:
+        return None
+    
+    # RGB的第一张图被认为是0时刻
+    # video_start_time就是第一张图片的绝对时间
+    video_start_time = first_image_abs_time
+    
+    return video_start_time
+
+
+def convert_fred_to_coco(fred_root, output_root, modality='rgb', 
+                         train_ratio=0.7, val_ratio=0.15, test_ratio=0.15,
+                         time_tolerance=0.05):
+    """
+    转换FRED数据集到COCO格式
+    从coordinates.txt读取标注，使用PADDED_RGB和Event/Frames图像
+    
+    Args:
+        fred_root: FRED数据集根目录
+        output_root: 输出目录
+        modality: 'rgb' 或 'event'
+        train_ratio: 训练集比例
+        val_ratio: 验证集比例
+        test_ratio: 测试集比例
+        time_tolerance: 时间匹配容差（秒）
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("错误: 需要安装 Pillow 库")
+        print("请运行: pip install Pillow")
+        return None
+    
+    fred_root = Path(fred_root)
+    output_root = Path(output_root) / modality
+    
+    # 创建输出目录（仅创建 annotations 目录，不创建 train/val/test）
+    (output_root / 'annotations').mkdir(parents=True, exist_ok=True)
+    
+    print(f"\n{'='*70}")
+    print(f"转换FRED数据集到COCO格式 - {modality.upper()}模态")
+    print(f"{'='*70}")
+    print(f"源目录: {fred_root}")
+    print(f"输出目录: {output_root}")
+    print(f"图像源: {'PADDED_RGB' if modality == 'rgb' else 'Event/Frames'}")
+    print(f"标注源: coordinates.txt")
+    print(f"时间容差: {time_tolerance}秒")
+    print(f"数据集划分: 训练{train_ratio*100:.0f}% / 验证{val_ratio*100:.0f}% / 测试{test_ratio*100:.0f}%")
+    print(f"模式: 使用相对路径（不复制图像文件）")
+    print(f"{'='*70}\n")
+    
+    # COCO格式数据结构
     coco_data = {
-        "info": {
-            "description": f"FRED Dataset - {modality.upper()} Modality",
-            "url": "",
-            "version": "1.0",
-            "year": 2024,
-            "contributor": "FRED",
-            "date_created": datetime.now().strftime("%Y/%m/%d")
+        'train': {
+            'images': [],
+            'annotations': [],
+            'categories': [{'id': 1, 'name': 'object', 'supercategory': 'object'}]
         },
-        "licenses": [
-            {
-                "id": 1,
-                "name": "Unknown",
-                "url": ""
-            }
-        ],
-        "images": [],
-        "annotations": [],
-        "categories": categories
+        'val': {
+            'images': [],
+            'annotations': [],
+            'categories': [{'id': 1, 'name': 'object', 'supercategory': 'object'}]
+        },
+        'test': {
+            'images': [],
+            'annotations': [],
+            'categories': [{'id': 1, 'name': 'object', 'supercategory': 'object'}]
+        }
     }
     
     image_id = 1
     annotation_id = 1
     
-    # 处理每个文件
-    for file_info in tqdm(file_list, desc=f"处理{split_name}集"):
-        # 读取图片获取尺寸
-        img = Image.open(file_info['image'])
-        img_width, img_height = img.size
+    # 统计信息
+    stats = {
+        'total_sequences': 0,
+        'total_images': 0,
+        'matched_images': 0,
+        'unmatched_images': 0,
+        'train_images': 0,
+        'val_images': 0,
+        'test_images': 0,
+        'total_annotations': 0
+    }
+    
+    # 遍历所有序列
+    sequences = sorted([d for d in fred_root.iterdir() if d.is_dir() and not d.name.startswith('.')])
+    
+    print(f"找到 {len(sequences)} 个序列\n")
+    
+    for seq_dir in tqdm(sequences, desc="处理序列"):
+        stats['total_sequences'] += 1
         
-        # 生成新的文件名
-        new_filename = f"{file_info['video_id']}_{Path(file_info['filename']).stem}{Path(file_info['filename']).suffix}"
+        # 查找coordinates.txt
+        coord_file = seq_dir / 'coordinates.txt'
+        if not coord_file.exists():
+            # 尝试子目录（处理序列2的特殊情况）
+            subdirs = [d for d in seq_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
+            for subdir in subdirs:
+                coord_file = subdir / 'coordinates.txt'
+                if coord_file.exists():
+                    seq_dir = subdir
+                    break
         
-        # 复制图片到对应的split目录
-        dst_img = coco_root / split_name / new_filename
-        shutil.copy2(file_info['image'], dst_img)
+        if not coord_file.exists():
+            continue
         
-        # 添加图片信息
-        image_info = {
-            "id": image_id,
-            "file_name": new_filename,
-            "width": img_width,
-            "height": img_height,
-            "license": 1,
-            "date_captured": ""
-        }
-        coco_data["images"].append(image_info)
+        # 解析标注（相对时间戳）
+        annotations = parse_coordinates_file(coord_file)
+        if not annotations:
+            continue
         
-        # 读取YOLO标注并转换
-        with open(file_info['label'], 'r') as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) != 5:
-                    continue
-                
-                class_id = int(parts[0])
-                yolo_bbox = [float(x) for x in parts[1:5]]
-                
-                # 转换边界框
-                coco_bbox = yolo_to_coco_bbox(yolo_bbox, img_width, img_height)
-                
-                # 计算面积
-                area = coco_bbox[2] * coco_bbox[3]
-                
-                # 添加标注信息
-                annotation = {
-                    "id": annotation_id,
-                    "image_id": image_id,
-                    "category_id": class_id + 1,  # COCO的category_id从1开始
-                    "bbox": coco_bbox,
-                    "area": area,
-                    "iscrowd": 0,
-                    "segmentation": []
-                }
-                coco_data["annotations"].append(annotation)
-                annotation_id += 1
+        # 确定图像目录
+        if modality == 'rgb':
+            img_dir = seq_dir / 'PADDED_RGB'
+            img_ext = '.jpg'
+        else:  # event
+            img_dir = seq_dir / 'Event' / 'Frames'
+            img_ext = '.png'
         
-        image_id += 1
-    
-    # 保存COCO标注文件
-    annotation_file = coco_root / "annotations" / f"instances_{split_name}.json"
-    with open(annotation_file, 'w') as f:
-        json.dump(coco_data, f, indent=2)
-    
-    return coco_data
-
-def convert_dataset(fred_root, output_root, modality, categories, train_ratio, val_ratio, test_ratio):
-    """转换整个数据集"""
-    print("=" * 70)
-    print(f"FRED数据集转换为COCO格式 - {modality.upper()} 模态")
-    print("=" * 70)
-    
-    # 创建COCO目录结构
-    coco_root = create_coco_structure(output_root, modality)
-    print(f"✓ 创建COCO目录结构: {coco_root}")
-    
-    # 收集所有文件
-    print(f"\n正在收集{modality.upper()}数据集文件...")
-    file_pairs = collect_dataset_files(fred_root, modality)
-    print(f"✓ 找到 {len(file_pairs)} 个有效的图片-标注对")
-    
-    if len(file_pairs) == 0:
-        print(f"错误：未找到任何有效的{modality}数据！")
-        return None
-    
-    # 划分数据集
-    print("\n正在划分数据集...")
-    datasets = split_dataset(file_pairs, train_ratio, val_ratio, test_ratio)
-    
-    print(f"✓ 训练集: {len(datasets['train'])} 张")
-    print(f"✓ 验证集: {len(datasets['val'])} 张")
-    print(f"✓ 测试集: {len(datasets['test'])} 张")
-    
-    # 转换各个数据集
-    stats = {}
-    for split_name, file_list in datasets.items():
-        print(f"\n正在转换 {split_name} 集...")
-        coco_data = create_coco_annotation(file_list, coco_root, split_name, categories, modality)
+        if not img_dir.exists():
+            continue
         
-        stats[split_name] = {
-            'images': len(coco_data['images']),
-            'annotations': len(coco_data['annotations'])
-        }
+        # 获取所有图像
+        images = sorted([f for f in img_dir.iterdir() if f.suffix == img_ext])
         
-        print(f"✓ {split_name} 集转换完成")
-        print(f"  - 图片数: {stats[split_name]['images']}")
-        print(f"  - 标注数: {stats[split_name]['annotations']}")
+        if not images:
+            continue
+        
+        # 计算视频起始时间
+        video_start_time = calculate_video_start_time(images, annotations, modality)
+        if video_start_time is None:
+            continue
+        
+        # 处理每张图像
+        for img_path in images:
+            stats['total_images'] += 1
+            
+            # 提取绝对时间戳
+            abs_timestamp = extract_absolute_timestamp_from_filename(img_path.name, modality)
+            if abs_timestamp is None:
+                stats['unmatched_images'] += 1
+                continue
+            
+            # 转换为相对时间戳
+            relative_timestamp = abs_timestamp - video_start_time
+            
+            # 查找匹配的标注
+            bbox = find_closest_annotation(relative_timestamp, annotations, time_tolerance)
+            if bbox is None:
+                stats['unmatched_images'] += 1
+                continue
+            
+            stats['matched_images'] += 1
+            
+            # 确定数据集划分（使用确定性方法）
+            rand_val = (image_id % 100) / 100.0
+            if rand_val < train_ratio:
+                split = 'train'
+                stats['train_images'] += 1
+            elif rand_val < train_ratio + val_ratio:
+                split = 'val'
+                stats['val_images'] += 1
+            else:
+                split = 'test'
+                stats['test_images'] += 1
+            
+            # 生成相对路径（相对于 fred_root）
+            # 格式: "序列0/PADDED_RGB/Video_0_16_03_03.363444.jpg"
+            seq_name = seq_dir.parent.name if seq_dir.parent.name.isdigit() else seq_dir.name
+            try:
+                relative_path = img_path.relative_to(fred_root)
+                new_filename = str(relative_path)
+            except ValueError:
+                # 如果无法计算相对路径，使用原来的方式
+                new_filename = f"seq{seq_name}_{img_path.name}"
+            
+            # 不复制图像，直接使用原始路径
+            
+            # 获取图像尺寸
+            with Image.open(img_path) as img:
+                width, height = img.size
+            
+            # 添加图像信息
+            image_info = {
+                'id': image_id,
+                'file_name': new_filename,
+                'width': width,
+                'height': height,
+                'sequence': seq_name,
+                'relative_timestamp': relative_timestamp,
+                'absolute_timestamp': abs_timestamp
+            }
+            coco_data[split]['images'].append(image_info)
+            
+            # 转换bbox格式: [x1, y1, x2, y2] -> [x, y, width, height]
+            x1, y1, x2, y2 = bbox
+            bbox_coco = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+            area = float((x2 - x1) * (y2 - y1))
+            
+            # 添加标注信息
+            annotation_info = {
+                'id': annotation_id,
+                'image_id': image_id,
+                'category_id': 1,
+                'bbox': bbox_coco,
+                'area': area,
+                'iscrowd': 0
+            }
+            coco_data[split]['annotations'].append(annotation_info)
+            
+            stats['total_annotations'] += 1
+            image_id += 1
+            annotation_id += 1
+    
+    # 保存COCO格式标注文件
+    print(f"\n保存COCO标注文件...")
+    for split in ['train', 'val', 'test']:
+        output_file = output_root / 'annotations' / f'instances_{split}.json'
+        with open(output_file, 'w') as f:
+            json.dump(coco_data[split], f, indent=2)
+        print(f"  {split}: {output_file}")
     
     # 打印统计信息
-    print("\n" + "=" * 70)
-    print("转换完成！")
-    print("=" * 70)
-    print(f"模态: {modality.upper()}")
-    print(f"输出目录: {coco_root}")
-    print(f"\n数据集统计:")
-    print(f"  训练集: {stats['train']['images']} 张图片, {stats['train']['annotations']} 个标注")
-    print(f"  验证集: {stats['val']['images']} 张图片, {stats['val']['annotations']} 个标注")
-    print(f"  测试集: {stats['test']['images']} 张图片, {stats['test']['annotations']} 个标注")
-    print(f"  总计: {sum(s['images'] for s in stats.values())} 张图片, {sum(s['annotations'] for s in stats.values())} 个标注")
+    print(f"\n{'='*70}")
+    print(f"转换完成！")
+    print(f"{'='*70}")
+    print(f"总序列数: {stats['total_sequences']}")
+    print(f"总图像数: {stats['total_images']}")
+    print(f"匹配图像数: {stats['matched_images']}")
+    print(f"未匹配图像数: {stats['unmatched_images']}")
+    if stats['total_images'] > 0:
+        print(f"匹配率: {stats['matched_images']/stats['total_images']*100:.2f}%")
+    print(f"\n数据集划分:")
+    print(f"  训练集: {stats['train_images']} 张图像")
+    print(f"  验证集: {stats['val_images']} 张图像")
+    print(f"  测试集: {stats['test_images']} 张图像")
+    print(f"  总标注数: {stats['total_annotations']}")
+    print(f"{'='*70}\n")
     
-    # 保存数据集信息
-    info_file = coco_root / "dataset_info.txt"
-    with open(info_file, 'w') as f:
-        f.write(f"FRED Dataset - {modality.upper()} Modality\n")
-        f.write("=" * 70 + "\n\n")
-        f.write(f"创建时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"源数据路径: {fred_root}\n\n")
-        f.write("数据集划分:\n")
-        f.write(f"  训练集: {train_ratio*100:.0f}%\n")
-        f.write(f"  验证集: {val_ratio*100:.0f}%\n")
-        f.write(f"  测试集: {test_ratio*100:.0f}%\n\n")
-        f.write("统计信息:\n")
-        for split_name, stat in stats.items():
-            f.write(f"  {split_name}: {stat['images']} 张图片, {stat['annotations']} 个标注\n")
-        f.write(f"\n类别信息:\n")
-        for cat in categories:
-            f.write(f"  ID {cat['id']}: {cat['name']}\n")
+    # 保存统计信息
+    stats_file = output_root / 'conversion_stats.json'
+    with open(stats_file, 'w') as f:
+        json.dump(stats, f, indent=2)
+    print(f"统计信息已保存: {stats_file}\n")
     
-    return coco_root
+    return stats
 
-def main():
-    """主函数"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='将FRED数据集转换为COCO格式')
-    parser.add_argument('--modality', type=str, required=True, choices=['rgb', 'event', 'both'],
-                        help='选择模态: rgb, event, 或 both')
-    parser.add_argument('--fred_root', type=str, default=FRED_ROOT,
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='从coordinates.txt重新生成FRED COCO数据集')
+    parser.add_argument('--fred_root', type=str, default='/home/yz/datasets/fred',
                         help='FRED数据集根目录')
-    parser.add_argument('--output_root', type=str, default=OUTPUT_ROOT,
+    parser.add_argument('--output_root', type=str, default='datasets/fred_coco',
                         help='输出目录')
-    parser.add_argument('--train_ratio', type=float, default=TRAIN_RATIO,
+    parser.add_argument('--modality', type=str, default='both', choices=['rgb', 'event', 'both'],
+                        help='转换的模态')
+    parser.add_argument('--train_ratio', type=float, default=0.7,
                         help='训练集比例')
-    parser.add_argument('--val_ratio', type=float, default=VAL_RATIO,
+    parser.add_argument('--val_ratio', type=float, default=0.15,
                         help='验证集比例')
-    parser.add_argument('--test_ratio', type=float, default=TEST_RATIO,
+    parser.add_argument('--test_ratio', type=float, default=0.15,
                         help='测试集比例')
-    parser.add_argument('--seed', type=int, default=42,
-                        help='随机种子')
+    parser.add_argument('--time_tolerance', type=float, default=0.05,
+                        help='时间匹配容差（秒）')
     
     args = parser.parse_args()
     
-    # 设置随机种子
-    random.seed(args.seed)
-    
     # 验证比例
     total_ratio = args.train_ratio + args.val_ratio + args.test_ratio
-    if abs(total_ratio - 1.0) > 0.01:
-        print(f"错误：训练集、验证集和测试集比例之和必须为1.0，当前为{total_ratio}")
-        return
+    if abs(total_ratio - 1.0) > 0.001:
+        raise ValueError(f"数据集比例之和必须为1.0，当前为{total_ratio}")
     
     # 转换数据集
-    modalities = ['rgb', 'event'] if args.modality == 'both' else [args.modality]
-    
-    for modality in modalities:
-        print("\n")
-        coco_root = convert_dataset(
-            fred_root=args.fred_root,
-            output_root=args.output_root,
-            modality=modality,
-            categories=CATEGORIES,
+    if args.modality in ['rgb', 'both']:
+        print("\n" + "="*70)
+        print("转换RGB数据集")
+        print("="*70)
+        convert_fred_to_coco(
+            args.fred_root,
+            args.output_root,
+            modality='rgb',
             train_ratio=args.train_ratio,
             val_ratio=args.val_ratio,
-            test_ratio=args.test_ratio
+            test_ratio=args.test_ratio,
+            time_tolerance=args.time_tolerance
         )
-        
-        if coco_root:
-            print(f"\n{modality.upper()}模态数据集已保存到: {coco_root}")
     
-    print("\n" + "=" * 70)
-    print("所有转换完成！")
-    print("=" * 70)
-    print("\n下一步操作：")
-    print("1. 查看生成的COCO标注文件: datasets/fred_coco/{modality}/annotations/")
-    print("2. 使用COCO API加载和验证数据集")
-    print("3. 根据需要修改训练脚本以支持COCO格式")
-
-if __name__ == "__main__":
-    main()
+    if args.modality in ['event', 'both']:
+        print("\n" + "="*70)
+        print("转换Event数据集")
+        print("="*70)
+        convert_fred_to_coco(
+            args.fred_root,
+            args.output_root,
+            modality='event',
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            test_ratio=args.test_ratio,
+            time_tolerance=args.time_tolerance
+        )
+    
+    print("\n✅ 所有转换完成！")
