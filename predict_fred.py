@@ -92,7 +92,9 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_resu
         
         # 保存结果
         if save_results:
-            output_path = os.path.join(output_dir, img_info['file_name'])
+            # 只使用文件名（不包含目录），避免路径问题
+            output_filename = os.path.basename(img_info['file_name'])
+            output_path = os.path.join(output_dir, output_filename)
             r_image.save(output_path)
         
         if (i + 1) % 10 == 0:

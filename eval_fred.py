@@ -140,8 +140,10 @@ def evaluate_model(model_path, modality='rgb', coco_root='datasets/fred_coco',
     
     # 遍历测试集
     for img_info in tqdm(images, desc="处理图片"):
-        image_id = os.path.splitext(img_info['file_name'])[0]
-        img_path = os.path.join(test_img_dir, img_info['file_name'])
+        # 只使用文件名（不包含目录），避免路径问题
+        file_name = img_info['file_name']
+        image_id = os.path.splitext(os.path.basename(file_name))[0]
+        img_path = os.path.join(test_img_dir, file_name)
         
         if not os.path.exists(img_path):
             print(f"⚠ 图片不存在: {img_path}")

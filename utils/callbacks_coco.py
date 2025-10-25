@@ -186,8 +186,10 @@ class CocoEvalCallback:
             
             # 遍历验证集
             for img_info in tqdm(self.images, desc="Evaluating"):
-                image_id = os.path.splitext(img_info['file_name'])[0]
-                img_path = os.path.join(self.image_dir, img_info['file_name'])
+                # 只使用文件名（不包含目录），避免路径问题
+                file_name = img_info['file_name']
+                image_id = os.path.splitext(os.path.basename(file_name))[0]
+                img_path = os.path.join(self.image_dir, file_name)
                 
                 if not os.path.exists(img_path):
                     continue
