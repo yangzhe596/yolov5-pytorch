@@ -11,7 +11,12 @@ import numpy as np
 from PIL import Image
 from yolo import YOLO
 
-def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_results=True):
+# 导入FRED配置
+import config_fred as cfg
+
+
+def predict_fred_dataset(modality='rgb', split='test', num_samples=10, 
+                         save_results=True, model_path=None):
     """
     在FRED数据集上进行预测
     
@@ -20,6 +25,7 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_resu
         split: 'train', 'val', 或 'test'
         num_samples: 预测的样本数量（0表示全部）
         save_results: 是否保存预测结果
+        model_path: 模型权重路径（None则使用配置文件中的最佳权重）
     """
     import json
     from pathlib import Path
@@ -28,26 +34,43 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_resu
     print(f"FRED数据集预测 - {modality.upper()}模态 - {split}集")
     print("=" * 80)
     
-    # 配置YOLO模型
-    # 注意：需要修改yolo.py中的_defaults以匹配FRED模型
+    # 如果未指定模型路径，使用配置文件中的最佳权重
+    if model_path is None:
+        model_path = cfg.get_model_path(modality, best=True)
+    
+    # 检查模型是否存在
+    if not os.path.exists(model_path):
+        print(f"错误: 模型文件不存在 {model_path}")
+        print(f"\n请先训练模型:")
+        print(f"  python train_fred.py --modality {modality}")
+        return
+    
+    # 配置YOLO模型（使用配置文件中的参数）
+    # 注意：需要创建 model_data/fred_classes.txt 文件
+    classes_file = 'model_data/fred_classes.txt'
+    if not os.path.exists(classes_file):
+        # 自动创建类别文件
+        os.makedirs('model_data', exist_ok=True)
+        with open(classes_file, 'w') as f:
+            for class_name in cfg.CLASS_NAMES:
+                f.write(f"{class_name}\n")
+        print(f"✓ 已创建类别文件: {classes_file}")
+    
     yolo = YOLO(
-        model_path=f'logs/fred_{modality}/best_epoch_weights.pth',
-        classes_path='model_data/fred_classes.txt',  # 需要创建这个文件
-        anchors_path='model_data/yolo_anchors.txt',
-        input_shape=[640, 640],
-        backbone='cspdarknet',
-        phi='s',
-        confidence=0.5,
+        model_path=model_path,
+        classes_path=classes_file,
+        anchors_path=cfg.ANCHORS_PATH,
+        input_shape=cfg.INPUT_SHAPE,
+        backbone=cfg.BACKBONE,
+        phi=cfg.PHI,
+        confidence=0.5,  # 预测时使用较高的置信度
         nms_iou=0.3,
-        cuda=True
+        cuda=cfg.CUDA
     )
     
     # 加载COCO标注
-    coco_root = f'datasets/fred_coco/{modality}'
-    ann_file = f'{coco_root}/annotations/instances_{split}.json'
-    # 使用FRED数据集根目录（file_name包含相对路径）
-    fred_root = '/home/yz/datasets/fred'
-    img_dir = fred_root
+    ann_file = cfg.get_annotation_path(modality, split)
+    img_dir = cfg.get_image_dir(modality)
     
     if not os.path.exists(ann_file):
         print(f"错误: 标注文件不存在 {ann_file}")
@@ -113,6 +136,7 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10, save_resu
     if save_results:
         print(f"  结果已保存到: {output_dir}")
 
+
 def main():
     parser = argparse.ArgumentParser(description='使用FRED数据集训练的模型进行预测')
     parser.add_argument('--modality', type=str, default='rgb', choices=['rgb', 'event'],
@@ -124,27 +148,22 @@ def main():
     parser.add_argument('--no_save', action='store_true',
                         help='不保存预测结果')
     parser.add_argument('--model_path', type=str, default='',
-                        help='模型权重路径（覆盖默认路径）')
+                        help='模型权重路径（默认使用配置文件中的最佳权重）')
     
     args = parser.parse_args()
     
-    # 检查模型是否存在
-    default_model = f'logs/fred_{args.modality}/best_epoch_weights.pth'
-    model_path = args.model_path if args.model_path else default_model
-    
-    if not os.path.exists(model_path):
-        print(f"错误: 模型文件不存在 {model_path}")
-        print(f"\n请先训练模型:")
-        print(f"  python train_fred.py --modality {args.modality}")
-        return
+    # 如果未指定模型路径，使用None（函数内部会使用配置文件中的路径）
+    model_path = args.model_path if args.model_path else None
     
     # 预测
     predict_fred_dataset(
         modality=args.modality,
         split=args.split,
         num_samples=args.num_samples,
-        save_results=not args.no_save
+        save_results=not args.no_save,
+        model_path=model_path
     )
+
 
 if __name__ == "__main__":
     main()

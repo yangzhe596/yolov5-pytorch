@@ -26,6 +26,9 @@ from utils.utils import (download_weights, get_anchors, get_classes,
                          seed_everything, show_config, worker_init_fn)
 from utils.utils_fit import fit_one_epoch
 
+# 导入FRED配置
+import config_fred as cfg
+
 if __name__ == "__main__":
     # 命令行参数
     parser = argparse.ArgumentParser(description='使用FRED COCO数据集训练YOLOv5')
@@ -33,97 +36,109 @@ if __name__ == "__main__":
                         help='选择模态: rgb 或 event')
     parser.add_argument('--eval_only', action='store_true', 
                         help='只进行评估，不进行训练')
-    parser.add_argument('--coco_root', type=str, default='datasets/fred_coco',
-                        help='COCO数据集根目录')
     parser.add_argument('--eval_map', action='store_true', default=True,
                         help='是否计算mAP（会增加训练时间）')
     parser.add_argument('--no_eval_map', action='store_true',
                         help='禁用mAP评估以加快训练速度')
+    parser.add_argument('--resume', action='store_true',
+                        help='从最佳权重继续训练')
     args = parser.parse_args()
     
     # 如果指定了 --no_eval_map，则禁用mAP评估
     if args.no_eval_map:
         args.eval_map = False
     
+    modality = args.modality
+    
+    # ========================================================================
+    # 从配置文件加载参数
+    # ========================================================================
+    
     # 基本配置
-    Cuda = True
-    seed = 11
-    distributed = False
-    sync_bn = False
-    fp16 = False
+    Cuda = cfg.CUDA
+    seed = cfg.SEED
+    distributed = cfg.DISTRIBUTED
+    sync_bn = cfg.SYNC_BN
+    fp16 = cfg.FP16
     
     # 模型配置
-    input_shape = [640, 640]
-    backbone = 'cspdarknet'
-    phi = 's'
-    pretrained = True
+    input_shape = cfg.INPUT_SHAPE
+    backbone = cfg.BACKBONE
+    phi = cfg.PHI
+    pretrained = cfg.PRETRAINED
     
-    # FRED数据集配置
-    modality = args.modality
-    coco_root = os.path.join(args.coco_root, modality)
+    # 数据集路径配置
+    train_json = cfg.get_annotation_path(modality, 'train')
+    val_json = cfg.get_annotation_path(modality, 'val')
+    test_json = cfg.get_annotation_path(modality, 'test')
     
-    # COCO标注文件路径
-    train_json = os.path.join(coco_root, 'annotations', 'instances_train.json')
-    val_json = os.path.join(coco_root, 'annotations', 'instances_val.json')
-    test_json = os.path.join(coco_root, 'annotations', 'instances_test.json')
-    
-    # 图片目录（使用FRED数据集根目录，因为file_name包含相对路径）
-    # 例如: file_name = "0/PADDED_RGB/Video_0_16_03_03.363444.jpg"
-    # 完整路径 = fred_root / file_name
-    fred_root = '/home/yz/datasets/fred'  # FRED数据集根目录
-    train_img_dir = fred_root
-    val_img_dir = fred_root
-    test_img_dir = fred_root
+    train_img_dir = cfg.get_image_dir(modality)
+    val_img_dir = cfg.get_image_dir(modality)
+    test_img_dir = cfg.get_image_dir(modality)
     
     # 检查文件是否存在
     if not os.path.exists(train_json):
         raise FileNotFoundError(f"训练集标注文件不存在: {train_json}\n"
                               f"请先运行: python convert_fred_to_coco.py --modality {modality}")
     
-    # 类别配置（FRED数据集只有一个类别）
-    num_classes = 1
-    class_names = ['object']
+    # 类别配置
+    num_classes = cfg.NUM_CLASSES
+    class_names = cfg.CLASS_NAMES
     
     # 先验框配置
-    anchors_path = 'model_data/yolo_anchors.txt'
-    anchors_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+    anchors_path = cfg.ANCHORS_PATH
+    anchors_mask = cfg.ANCHORS_MASK
     
-    # 模型权重
-    model_path = f'logs/fred_{modality}_best.pth' if os.path.exists(f'logs/fred_{modality}_best.pth') else ''
+    # 模型权重（支持断点续练）
+    if args.resume:
+        model_path = cfg.get_model_path(modality, best=True)
+        if not os.path.exists(model_path):
+            print(f"警告: 未找到最佳权重 {model_path}，将从头训练")
+            model_path = ''
+    else:
+        model_path = ''
     
     # 数据增强
-    mosaic = True
-    mosaic_prob = 0.5
-    mixup = True
-    mixup_prob = 0.5
-    special_aug_ratio = 0.7
-    label_smoothing = 0
+    mosaic = cfg.MOSAIC
+    mosaic_prob = cfg.MOSAIC_PROB
+    mixup = cfg.MIXUP
+    mixup_prob = cfg.MIXUP_PROB
+    special_aug_ratio = cfg.SPECIAL_AUG_RATIO
+    label_smoothing = cfg.LABEL_SMOOTHING
     
     # 训练参数
-    Init_Epoch = 0
-    Freeze_Epoch = 50
-    UnFreeze_Epoch = 300
-    Freeze_batch_size = 16
-    Unfreeze_batch_size = 8  # FRED数据集目标较小，可以用较小的batch
-    Freeze_Train = True
+    Init_Epoch = cfg.INIT_EPOCH
+    Freeze_Epoch = cfg.FREEZE_EPOCH
+    UnFreeze_Epoch = cfg.UNFREEZE_EPOCH
+    Freeze_batch_size = cfg.FREEZE_BATCH_SIZE
+    Unfreeze_batch_size = cfg.UNFREEZE_BATCH_SIZE
+    Freeze_Train = cfg.FREEZE_TRAIN
     
     # 优化器配置
-    Init_lr = 1e-2
-    Min_lr = Init_lr * 0.01
-    optimizer_type = "sgd"
-    momentum = 0.937
-    weight_decay = 5e-4
-    lr_decay_type = "cos"
+    Init_lr = cfg.INIT_LR
+    Min_lr = cfg.MIN_LR
+    optimizer_type = cfg.OPTIMIZER_TYPE
+    momentum = cfg.MOMENTUM
+    weight_decay = cfg.WEIGHT_DECAY
+    lr_decay_type = cfg.LR_DECAY_TYPE
     
     # 其他配置
-    save_period = 10
-    save_dir = f'logs/fred_{modality}'
-    eval_flag = True
-    eval_period = 10
-    num_workers = 4
+    save_period = cfg.SAVE_PERIOD
+    save_dir = cfg.get_save_dir(modality)
+    eval_flag = cfg.EVAL_FLAG
+    eval_period = cfg.EVAL_PERIOD
+    num_workers = cfg.NUM_WORKERS
     
     # 创建保存目录
     os.makedirs(save_dir, exist_ok=True)
+    
+    # 验证配置
+    config_errors = cfg.validate_config()
+    if config_errors:
+        print("配置验证失败:")
+        for error in config_errors:
+            print(f"  - {error}")
+        raise ValueError("配置错误，请检查 config_fred.py")
     
     seed_everything(seed)
     
@@ -356,11 +371,11 @@ if __name__ == "__main__":
                     log_dir=log_dir,
                     cuda=Cuda,
                     map_out_path=os.path.join(save_dir, ".temp_map_out"),
-                    max_boxes=100,
-                    confidence=0.05,
-                    nms_iou=0.5,
-                    letterbox_image=True,
-                    MINOVERLAP=0.5,
+                    max_boxes=cfg.MAX_BOXES,
+                    confidence=cfg.CONFIDENCE,
+                    nms_iou=cfg.NMS_IOU,
+                    letterbox_image=cfg.LETTERBOX_IMAGE,
+                    MINOVERLAP=cfg.MINOVERLAP,
                     eval_flag=eval_flag,
                     period=eval_period
                 )
@@ -441,6 +456,6 @@ if __name__ == "__main__":
                 loss_history.writer.close()
                 
                 # 保存最终模型
-                final_model_path = os.path.join(save_dir, f'fred_{modality}_final.pth')
+                final_model_path = cfg.get_model_path(modality, best=False)
                 torch.save(model.state_dict(), final_model_path)
                 print(f"\n训练完成！最终模型已保存: {final_model_path}")

@@ -17,45 +17,54 @@ from utils.utils import get_anchors, cvtColor, preprocess_input, resize_image
 from utils.utils_bbox import DecodeBox
 from utils.utils_map import get_coco_map, get_map
 
+# 导入FRED配置
+import config_fred as cfg
 
-def evaluate_model(model_path, modality='rgb', coco_root='datasets/fred_coco', 
-                   confidence=0.05, nms_iou=0.5, input_shape=(640, 640),
-                   map_out_path='map_out', MINOVERLAP=0.5):
+
+def evaluate_model(model_path, modality='rgb', 
+                   confidence=None, nms_iou=None, input_shape=None,
+                   map_out_path='map_out', MINOVERLAP=None):
     """
     评估已训练的模型
     
     Args:
         model_path: 模型权重路径
         modality: 模态 (rgb/event)
-        coco_root: COCO数据集根目录
-        confidence: 置信度阈值
-        nms_iou: NMS IOU阈值
-        input_shape: 输入尺寸
+        confidence: 置信度阈值（None则使用配置文件）
+        nms_iou: NMS IOU阈值（None则使用配置文件）
+        input_shape: 输入尺寸（None则使用配置文件）
         map_out_path: mAP计算输出目录
-        MINOVERLAP: mAP计算的IOU阈值
+        MINOVERLAP: mAP计算的IOU阈值（None则使用配置文件）
     """
     
+    # 从配置文件加载参数（如果未指定）
+    if confidence is None:
+        confidence = cfg.CONFIDENCE
+    if nms_iou is None:
+        nms_iou = cfg.NMS_IOU
+    if input_shape is None:
+        input_shape = tuple(cfg.INPUT_SHAPE)
+    if MINOVERLAP is None:
+        MINOVERLAP = cfg.MINOVERLAP
+    
     # 设备配置
-    cuda = torch.cuda.is_available()
+    cuda = cfg.CUDA and torch.cuda.is_available()
     device = torch.device('cuda' if cuda else 'cpu')
     
     # 数据集配置
-    coco_path = os.path.join(coco_root, modality)
-    test_json = os.path.join(coco_path, 'annotations', 'instances_test.json')
-    # 使用FRED数据集根目录（file_name包含相对路径）
-    fred_root = '/home/yz/datasets/fred'
-    test_img_dir = fred_root
+    test_json = cfg.get_annotation_path(modality, 'test')
+    test_img_dir = cfg.get_image_dir(modality)
     
     if not os.path.exists(test_json):
         raise FileNotFoundError(f"测试集标注文件不存在: {test_json}")
     
     # 模型配置
-    num_classes = 1
-    class_names = ['object']
-    anchors_path = 'model_data/yolo_anchors.txt'
-    anchors_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
-    backbone = 'cspdarknet'
-    phi = 's'
+    num_classes = cfg.NUM_CLASSES
+    class_names = cfg.CLASS_NAMES
+    anchors_path = cfg.ANCHORS_PATH
+    anchors_mask = cfg.ANCHORS_MASK
+    backbone = cfg.BACKBONE
+    phi = cfg.PHI
     
     print("=" * 70)
     print(f"FRED {modality.upper()} 模型评估")
@@ -226,7 +235,8 @@ def evaluate_model(model_path, modality='rgb', coco_root='datasets/fred_coco',
         print(f"{'='*70}")
     
     # 保存结果
-    result_file = os.path.join(os.path.dirname(model_path), f"eval_result_{modality}.txt")
+    save_dir = cfg.get_save_dir(modality)
+    result_file = os.path.join(save_dir, f"eval_result_{modality}.txt")
     with open(result_file, 'w') as f:
         f.write(f"Model: {model_path}\n")
         f.write(f"Test Set: {test_json}\n")
@@ -239,32 +249,43 @@ def evaluate_model(model_path, modality='rgb', coco_root='datasets/fred_coco',
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='评估FRED训练的YOLOv5模型')
-    parser.add_argument('--model_path', type=str, default='logs/fred_rgb/best_epoch_weights.pth',
-                        help='模型权重路径')
+    parser.add_argument('--model_path', type=str, default='',
+                        help='模型权重路径（默认使用配置文件中的最佳权重）')
     parser.add_argument('--modality', type=str, default='rgb', choices=['rgb', 'event'],
                         help='模态: rgb 或 event')
-    parser.add_argument('--coco_root', type=str, default='datasets/fred_coco',
-                        help='COCO数据集根目录')
-    parser.add_argument('--confidence', type=float, default=0.05,
-                        help='置信度阈值')
-    parser.add_argument('--nms_iou', type=float, default=0.5,
-                        help='NMS IOU阈值')
-    parser.add_argument('--input_shape', type=int, nargs=2, default=[640, 640],
-                        help='输入尺寸 (height width)')
+    parser.add_argument('--confidence', type=float, default=None,
+                        help=f'置信度阈值（默认: {cfg.CONFIDENCE}）')
+    parser.add_argument('--nms_iou', type=float, default=None,
+                        help=f'NMS IOU阈值（默认: {cfg.NMS_IOU}）')
+    parser.add_argument('--input_shape', type=int, nargs=2, default=None,
+                        help=f'输入尺寸 (height width)（默认: {cfg.INPUT_SHAPE}）')
     parser.add_argument('--map_out_path', type=str, default='map_out',
                         help='mAP计算输出目录')
-    parser.add_argument('--minoverlap', type=float, default=0.5,
-                        help='mAP计算的IOU阈值')
+    parser.add_argument('--minoverlap', type=float, default=None,
+                        help=f'mAP计算的IOU阈值（默认: {cfg.MINOVERLAP}）')
     
     args = parser.parse_args()
+    
+    # 如果未指定模型路径，使用配置文件中的最佳权重
+    if not args.model_path:
+        args.model_path = cfg.get_model_path(args.modality, best=True)
+    
+    # 检查模型是否存在
+    if not os.path.exists(args.model_path):
+        print(f"错误: 模型文件不存在 {args.model_path}")
+        print(f"\n请先训练模型:")
+        print(f"  python train_fred.py --modality {args.modality}")
+        exit(1)
+    
+    # 转换input_shape为tuple
+    input_shape = tuple(args.input_shape) if args.input_shape else None
     
     evaluate_model(
         model_path=args.model_path,
         modality=args.modality,
-        coco_root=args.coco_root,
         confidence=args.confidence,
         nms_iou=args.nms_iou,
-        input_shape=tuple(args.input_shape),
+        input_shape=input_shape,
         map_out_path=args.map_out_path,
         MINOVERLAP=args.minoverlap
     )

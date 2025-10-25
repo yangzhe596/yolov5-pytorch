@@ -398,7 +398,7 @@ def convert_fred_to_coco(fred_root, output_root, modality='rgb',
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='从coordinates.txt重新生成FRED COCO数据集')
-    parser.add_argument('--fred_root', type=str, default='/home/yz/datasets/fred',
+    parser.add_argument('--fred_root', type=str, default='/mnt/data/datasets/fred',
                         help='FRED数据集根目录')
     parser.add_argument('--output_root', type=str, default='datasets/fred_coco',
                         help='输出目录')
