@@ -3,6 +3,12 @@
 """
 FRED数据集训练统一配置文件
 集中管理所有FRED训练相关的配置参数
+
+版本: 2.0
+更新: 2025-11-01
+- 支持新版 convert_fred_to_coco_v2.py
+- 支持帧级别和序列级别划分
+- 改进的路径管理
 """
 import os
 
@@ -11,10 +17,15 @@ import os
 # ============================================================================
 
 # FRED 数据集根目录（可通过环境变量覆盖）
-FRED_ROOT = os.environ.get('FRED_ROOT', '/home/yz/datasets/fred')
+FRED_ROOT = os.environ.get('FRED_ROOT', '/mnt/data/datasets/fred')
 
 # COCO 格式数据集根目录
 COCO_ROOT = 'datasets/fred_coco'
+
+# 数据集划分模式: 'frame' 或 'sequence'
+# - frame: 帧级别划分（推荐，数据分布更均衡）
+# - sequence: 序列级别划分（严格场景分离）
+SPLIT_MODE = 'frame'
 
 def get_fred_root():
     """获取 FRED 数据集根目录"""
@@ -80,7 +91,7 @@ INPUT_SHAPE = [640, 640]
 BACKBONE = 'cspdarknet'
 
 # YOLOv5版本: 's', 'm', 'l', 'x'
-PHI = 's'
+PHI = 'm'
 
 # 是否使用预训练权重
 PRETRAINED = True
@@ -104,8 +115,8 @@ SEED = 11
 
 # 训练轮次
 INIT_EPOCH = 0
-FREEZE_EPOCH = 50
-UNFREEZE_EPOCH = 300
+FREEZE_EPOCH = 15
+UNFREEZE_EPOCH = 50
 
 # Batch Size
 FREEZE_BATCH_SIZE = 16
@@ -122,7 +133,7 @@ FREEZE_TRAIN = True
 OPTIMIZER_TYPE = 'sgd'
 
 # 学习率
-INIT_LR = 1e-2
+INIT_LR = 5e-3
 MIN_LR = INIT_LR * 0.01
 
 # SGD参数
@@ -155,17 +166,17 @@ LABEL_SMOOTHING = 0
 # ============================================================================
 
 # 保存周期（每多少个epoch保存一次）
-SAVE_PERIOD = 10
+SAVE_PERIOD = 5  # 调整保存周期：15 -> 5，适配50轮训练
 
 # 保存目录前缀
 SAVE_DIR_PREFIX = 'logs/fred'
 
 # 评估配置
 EVAL_FLAG = True
-EVAL_PERIOD = 10
+EVAL_PERIOD = 5  # 调整评估周期：15 -> 5，适配50轮训练
 
-# 数据加载
-NUM_WORKERS = 4
+# 数据加载（针对多核CPU优化）
+NUM_WORKERS = 8  # 增加：4 -> 8，加速数据加载
 
 # ============================================================================
 # 评估配置
@@ -247,8 +258,12 @@ def validate_config():
 1. 设置FRED数据集根目录（可选）：
    export FRED_ROOT=/path/to/your/fred/dataset
 
-2. 确保已转换FRED数据集为COCO格式：
-   python convert_fred_to_coco.py --modality rgb
+2. 转换FRED数据集为COCO格式（使用新版本脚本）：
+   # 帧级别划分（推荐）
+   python convert_fred_to_coco_v2.py --split-mode frame --modality both
+   
+   # 序列级别划分
+   python convert_fred_to_coco_v2.py --split-mode sequence --modality both
 
 3. 训练RGB模态：
    python train_fred.py --modality rgb
@@ -266,6 +281,16 @@ def validate_config():
 1. 命令行参数（最高优先级）
 2. 本配置文件
 3. 默认值（最低优先级）
+
+新版本改进：
+- 使用 interpolated_coordinates.txt（包含 drone_id）
+- 支持帧级别和序列级别划分
+- 完整的数据验证
+- 详细的统计信息
+
+详细文档：
+- FRED_DATASET_CONVERSION_GUIDE.md - 数据集转换指南
+- AGENTS.md - 完整项目文档
 """
 
 if __name__ == '__main__':

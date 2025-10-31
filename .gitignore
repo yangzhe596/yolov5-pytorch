@@ -9,6 +9,15 @@ logs/
 model_data/
 .temp_map_out/
 
+# ignore visualization outputs
+visualizations/
+coco_visualization/
+dataset_validation/
+specific_visualization/
+
+# ignore archive directory (old scripts and docs)
+archive/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
