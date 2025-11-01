@@ -79,7 +79,7 @@ class LossHistory():
 
 class EvalCallback():
     def __init__(self, net, input_shape, anchors, anchors_mask, class_names, num_classes, val_lines, log_dir, cuda, \
-            map_out_path=".temp_map_out", max_boxes=100, confidence=0.05, nms_iou=0.5, letterbox_image=True, MINOVERLAP=0.5, eval_flag=True, period=1):
+            map_out_path=".temp_map_out", max_boxes=100, confidence=0.05, nms_iou=0.5, letterbox_image=True, MINOVERLAP=0.5, eval_flag=True, period=1, max_eval_samples=None):
         super(EvalCallback, self).__init__()
         
         self.net                = net
@@ -99,6 +99,7 @@ class EvalCallback():
         self.MINOVERLAP         = MINOVERLAP
         self.eval_flag          = eval_flag
         self.period             = period
+        self.max_eval_samples   = max_eval_samples
         
         self.bbox_util          = DecodeBox(self.anchors, self.num_classes, (self.input_shape[0], self.input_shape[1]), self.anchors_mask)
         
@@ -178,7 +179,14 @@ class EvalCallback():
             if not os.path.exists(os.path.join(self.map_out_path, "detection-results")):
                 os.makedirs(os.path.join(self.map_out_path, "detection-results"))
             print("Get map.")
-            for annotation_line in tqdm(self.val_lines):
+            
+            # 快速验证模式：限制评估样本数量
+            eval_lines = self.val_lines
+            if self.max_eval_samples is not None:
+                eval_lines = self.val_lines[:self.max_eval_samples]
+                print(f"⚡ 快速验证模式: 仅评估 {len(eval_lines)} 个样本（共 {len(self.val_lines)} 个）")
+            
+            for annotation_line in tqdm(eval_lines):
                 line        = annotation_line.split()
                 image_id    = os.path.basename(line[0]).split('.')[0]
                 #------------------------------#

@@ -29,7 +29,7 @@ class CocoEvalCallback:
     def __init__(self, net, input_shape, anchors, anchors_mask, class_names, num_classes, 
                  coco_json_path, image_dir, log_dir, cuda,
                  map_out_path=".temp_map_out", max_boxes=100, confidence=0.05, 
-                 nms_iou=0.5, letterbox_image=True, MINOVERLAP=0.5, eval_flag=True, period=1):
+                 nms_iou=0.5, letterbox_image=True, MINOVERLAP=0.5, eval_flag=True, period=1, max_eval_samples=None):
         """
         Args:
             net: 模型
@@ -50,6 +50,7 @@ class CocoEvalCallback:
             MINOVERLAP: mAP计算的IOU阈值
             eval_flag: 是否进行评估
             period: 评估周期（每多少个epoch评估一次）
+            max_eval_samples: 最大评估样本数（用于快速验证）
         """
         super(CocoEvalCallback, self).__init__()
         
@@ -71,6 +72,7 @@ class CocoEvalCallback:
         self.MINOVERLAP = MINOVERLAP
         self.eval_flag = eval_flag
         self.period = period
+        self.max_eval_samples = max_eval_samples
         
         self.bbox_util = DecodeBox(self.anchors, self.num_classes, 
                                    (self.input_shape[0], self.input_shape[1]), 
@@ -184,8 +186,14 @@ class CocoEvalCallback:
             
             print("Get map.")
             
+            # 快速验证模式：限制评估样本数量
+            eval_images = self.images
+            if self.max_eval_samples is not None:
+                eval_images = self.images[:self.max_eval_samples]
+                print(f"⚡ 快速验证模式: 仅评估 {len(eval_images)} 个样本（共 {len(self.images)} 个）")
+            
             # 遍历验证集
-            for img_info in tqdm(self.images, desc="Evaluating"):
+            for img_info in tqdm(eval_images, desc="Evaluating"):
                 # 只使用文件名（不包含目录），避免路径问题
                 file_name = img_info['file_name']
                 image_id = os.path.splitext(os.path.basename(file_name))[0]

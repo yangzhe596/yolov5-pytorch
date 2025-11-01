@@ -5,9 +5,16 @@ from tqdm import tqdm
 
 from utils.utils import get_lr
         
-def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, Epoch, cuda, fp16, scaler, save_period, save_dir, local_rank=0):
+def fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, Epoch, cuda, fp16, scaler, save_period, save_dir, local_rank=0, max_batches=None):
     loss        = 0
     val_loss    = 0
+    
+    # 快速验证模式：限制batch数量
+    if max_batches is not None:
+        epoch_step = min(epoch_step, max_batches)
+        epoch_step_val = min(epoch_step_val, max_batches)
+        if local_rank == 0:
+            print(f'⚡ 快速验证模式: 训练 {epoch_step} batches, 验证 {epoch_step_val} batches')
 
     if local_rank == 0:
         print('Start Train')

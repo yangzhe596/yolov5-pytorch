@@ -13,10 +13,13 @@
 - [快速开始](#快速开始)
 - [环境配置](#环境配置)
 - [数据准备](#数据准备)
+- [数据集验证](#数据集验证)
 - [模型训练](#模型训练)
 - [模型评估](#模型评估)
 - [模型预测](#模型预测)
+- [可视化工具](#可视化工具)
 - [常见问题](#常见问题)
+- [项目结构](#项目结构)
 - [参考资源](#参考资源)
 
 ---
@@ -32,7 +35,7 @@
 - **模型**: YOLOv5 (s/m/l/x 版本)
 - **主干网络**: CSPDarknet / ConvNeXt / Swin Transformer
 - **数据格式**: VOC (XML) / COCO (JSON)
-- **训练策略**: 冻结训练、解冻训练、Mosaic、Mixup
+- **训练策略**: 冻结训练、解冻训练、Mosaic、Mixup、FP16混合精度
 - **部署**: 支持 ONNX 导出
 
 ### FRED 数据集支持
@@ -72,17 +75,29 @@ python get_map.py
 
 ### 2. FRED 数据集（推荐）
 
+#### 一键设置（最简单）
+
 ```bash
-# 1. 训练 RGB 模态
+# 自动完成所有设置
+./setup_fred_dataset.sh
+```
+
+#### 手动设置
+
+```bash
+# 1. 转换数据集为 COCO 格式
+python convert_fred_to_coco_v2.py --modality both
+
+# 2. 验证数据集
+python test_conversion_v2.py
+
+# 3. 训练 RGB 模态
 python train_fred.py --modality rgb
 
-# 2. 训练 Event 模态
-python train_fred.py --modality event
-
-# 3. 评估模型
+# 4. 评估模型
 python eval_fred.py --modality rgb
 
-# 4. 预测测试
+# 5. 预测测试
 python predict_fred.py --modality rgb
 ```
 
@@ -203,19 +218,33 @@ datasets/fred_coco/
 | 平均边界框 | 50.22 x 34.08 px | 50.96 x 34.58 px |
 | 类别数量 | 1 (object) | 1 (object) |
 
+#### FRED 数据集转换
+
+```bash
+# 使用新版转换脚本（推荐）
+python convert_fred_to_coco_v2.py --modality both
+
+# 仅转换 RGB 模态
+python convert_fred_to_coco_v2.py --modality rgb
+
+# 仅转换 Event 模态
+python convert_fred_to_coco_v2.py --modality event
+
+# 验证转换结果
+python test_conversion_v2.py
+```
+
 ---
 
-## 数据集可视化验证
+## 数据集验证
 
-### 验证数据集正确性
+在训练之前，强烈建议先验证数据集，确保标注正确。
 
-在训练之前，强烈建议先可视化验证数据集，确保标注正确。
-
-#### 快速验证（推荐）
+### 快速验证（推荐）
 
 ```bash
 # 使用交互式脚本
-bash validate_dataset.sh
+bash scripts/validate_dataset.sh
 
 # 然后选择验证模式:
 # 1) RGB训练集 (20个样本)
@@ -229,192 +258,44 @@ bash validate_dataset.sh
 # 9) 全部验证 (RGB+Event, train/val/test)
 ```
 
-#### 命令行验证
+### 命令行验证
 
 ```bash
 # 验证 RGB 训练集（20个样本）
-python visualize_dataset_validation.py --modality rgb --split train --num_samples 20
+python scripts/visualize_dataset_validation.py --modality rgb --split train --num_samples 20
 
 # 验证 Event 验证集（10个样本）
-python visualize_dataset_validation.py --modality event --split val --num_samples 10
+python scripts/visualize_dataset_validation.py --modality event --split val --num_samples 10
 
 # 验证所有数据集
-python visualize_dataset_validation.py --modality both --split all --num_samples 20
+python scripts/visualize_dataset_validation.py --modality both --split all --num_samples 20
 ```
 
-#### 验证输出
+### 验证输出
 
 验证完成后，会在 `dataset_validation/` 目录下生成：
 
 ```
 dataset_validation/
-├── rgb_train/                      # RGB 训练集验证结果
+├── rgb_train/
 │   ├── 0001_*.jpg                 # 可视化图片（带边界框）
-│   ├── 0002_*.jpg
-│   ├── ...
 │   ├── validation_report.json     # JSON 格式验证报告
 │   └── validation_report.html     # HTML 格式验证报告 ⭐
-│
-├── rgb_val/                        # RGB 验证集验证结果
-├── rgb_test/                       # RGB 测试集验证结果
-├── event_train/                    # Event 训练集验证结果
-├── event_val/                      # Event 验证集验证结果
-└── event_test/                     # Event 测试集验证结果
+├── rgb_val/
+├── rgb_test/
+├── event_train/
+├── event_val/
+└── event_test/
 ```
 
-#### 查看验证结果
+### 查看验证结果
 
-**方法1: 浏览器查看（推荐）**
 ```bash
-# 在浏览器中打开 HTML 报告
+# 在浏览器中打开 HTML 报告（推荐）
 firefox dataset_validation/rgb_train/validation_report.html
-# 或
-google-chrome dataset_validation/rgb_train/validation_report.html
-```
 
-HTML 报告包含：
-- 📊 数据集统计信息（图像数、标注数、边界框质量）
-- 🖼️ 可视化图片网格（带边界框）
-- ⚠️ 问题标注高亮显示
-- 📈 边界框尺寸统计
-
-**方法2: 查看图片**
-```bash
-# 直接查看可视化图片
+# 或直接查看可视化图片
 ls dataset_validation/rgb_train/*.jpg
-```
-
-**方法3: 查看 JSON 报告**
-```bash
-# 查看详细的验证报告
-cat dataset_validation/rgb_train/validation_report.json
-```
-
-#### 验证指标说明
-
-验证脚本会自动检查以下问题：
-
-| 问题类型 | 说明 | 标记颜色 |
-|---------|------|---------|
-| ✅ 有效边界框 | 坐标正确，尺寸合理 | 绿色 |
-| ⚠️ 超出边界 | 边界框超出图像边界 | 红色 |
-| ⚠️ 过小 | 宽度或高度 < 5px | 红色 |
-| ⚠️ 过大 | 宽度或高度 > 图像的90% | 红色 |
-
-#### 验证示例输出
-
-```
-================================================================================
-📊 数据集可视化验证 - RGB TRAIN
-================================================================================
-标注文件: datasets/fred_coco/rgb/annotations/instances_train.json
-输出目录: dataset_validation/rgb_train
-样本数量: 20
-================================================================================
-
-📈 数据集统计:
-   图像数量: 13629
-   标注数量: 13629
-   类别数量: 1
-      - object (ID: 1)
-
-🖼️  开始可视化 20 个样本...
-
-   ✅ [1/20] Video_0_16_03_03.363444.jpg
-       标注数: 1, 保存至: 0001_Video_0_16_03_03.363444.jpg
-   ✅ [2/20] Video_0_16_03_05.363444.jpg
-       标注数: 1, 保存至: 0002_Video_0_16_03_05.363444.jpg
-   ...
-
-================================================================================
-📊 边界框统计:
-================================================================================
-总标注数: 13629
-有效边界框: 13200
-超出边界: 429
-过小 (<5px): 0
-过大 (>90%): 0
-
-边界框尺寸统计:
-  宽度: 平均=50.2, 中位数=48.5, 最小=12.0, 最大=120.5
-  高度: 平均=34.1, 中位数=32.8, 最小=8.0, 最大=85.3
-  面积: 平均=1712.3, 中位数=1590.4
-================================================================================
-
-📄 验证报告已保存: dataset_validation/rgb_train/validation_report.json
-📄 HTML报告已保存: dataset_validation/rgb_train/validation_report.html
-
-✅ 可视化验证完成！
-   输出目录: dataset_validation/rgb_train
-   可视化图片: 20 张
-   验证报告: validation_report.json
-   HTML报告: validation_report.html
-================================================================================
-```
-
-#### 可视化特定图片
-
-如果你想可视化特定的图片（而不是随机样本），可以使用以下方法：
-
-**方法1: 交互式脚本（推荐）**
-```bash
-bash visualize_images.sh
-
-# 然后选择操作:
-# 1) 列出可用图片
-# 2) 通过图片ID可视化
-# 3) 通过文件名可视化
-# 4) 通过序列号可视化
-# 5) 通过正则表达式可视化
-```
-
-**方法2: 命令行**
-
-```bash
-# 1. 列出可用图片（查看图片ID和文件名）
-python visualize_specific_images.py --modality rgb --split train --list --list_limit 20
-
-# 2. 通过图片ID可视化
-python visualize_specific_images.py --modality rgb --split train --image_ids 1 2 3 10 20
-
-# 3. 通过文件名可视化（支持部分匹配）
-python visualize_specific_images.py --modality rgb --split train --filenames Video_0_16_03_03 Video_1_16_05_12
-
-# 4. 通过序列号可视化（可视化整个序列）
-python visualize_specific_images.py --modality rgb --split train --sequences 1 3 5
-
-# 5. 通过正则表达式可视化
-python visualize_specific_images.py --modality rgb --split train --pattern "Video_0_16_03_.*"
-
-# 6. Event模态示例
-python visualize_specific_images.py --modality event --split val --image_ids 100 200 300
-```
-
-**输出**:
-```
-specific_visualization/
-└── rgb_train/
-    ├── 0001_id1_Video_0_16_03_03.363444.jpg
-    ├── 0002_id2_Video_0_16_03_05.363444.jpg
-    └── ...
-```
-
-#### 其他可视化脚本
-
-项目还提供了其他可视化工具：
-
-```bash
-# 可视化COCO数据集样本（带边界框质量检查）
-python scripts/visualize_coco_samples.py --modality rgb --split train --num_samples 10
-
-# 仅检查边界框有效性（不生成图片）
-python scripts/visualize_coco_samples.py --modality rgb --split train --check_only
-
-# 可视化并验证时间戳匹配
-python scripts/visualize_dataset.py --modality rgb --split train --num_samples 5
-
-# 对比原始数据和转换后的数据
-python scripts/visualize_dataset.py --compare_original --video_id 3
 ```
 
 ---
@@ -482,11 +363,11 @@ INPUT_SHAPE = [640, 640]
 BACKBONE = 'cspdarknet'
 PHI = 's'
 
-# 训练配置
-FREEZE_EPOCH = 50
-UNFREEZE_EPOCH = 300
-FREEZE_BATCH_SIZE = 16
-UNFREEZE_BATCH_SIZE = 8
+# 训练配置（优化后）
+FREEZE_EPOCH = 30           # 50 -> 30
+UNFREEZE_EPOCH = 150        # 300 -> 150
+FREEZE_BATCH_SIZE = 32      # 16 -> 32
+UNFREEZE_BATCH_SIZE = 16    # 8 -> 16
 
 # 优化器配置
 OPTIMIZER_TYPE = 'sgd'
@@ -495,7 +376,11 @@ MIN_LR = 1e-4
 
 # 数据增强
 MOSAIC = True
-MIXUP = True
+MIXUP = False               # True -> False（大数据集不需要）
+
+# 性能优化
+FP16 = True                 # 启用混合精度训练
+NUM_WORKERS = 8             # 数据加载线程数
 ```
 
 #### 训练命令
@@ -510,23 +395,23 @@ python train_fred.py --modality event
 # 快速训练（不评估 mAP）
 python train_fred.py --modality rgb --no_eval_map
 
-# 使用快捷脚本
-bash start_training.sh
+# 快速验证（仅2个epoch）
+python train_fred.py --modality rgb --quick_test
 ```
 
 ### 训练策略
 
 #### 冻结训练 vs 解冻训练
 
-- **冻结阶段** (0-50 epoch):
+- **冻结阶段** (0-30 epoch):
   - 冻结主干网络，仅训练检测头
-  - 显存占用小（~6GB）
-  - 每个 epoch 约 5 分钟
+  - 显存占用小（~8GB）
+  - 每个 epoch 约 2.5 分钟
 
-- **解冻阶段** (50-300 epoch):
+- **解冻阶段** (30-150 epoch):
   - 解冻主干网络，全网络训练
-  - 显存占用大（~10GB）
-  - 每个 epoch 约 8 分钟
+  - 显存占用大（~14GB）
+  - 每个 epoch 约 4.5 分钟
 
 #### 预训练权重
 
@@ -561,11 +446,11 @@ logs/
 
 ### 预期训练时间（RTX 3090）
 
-#### FRED RGB 模态（300 epochs）
-- 冻结阶段 (50 epochs): ~4 小时
-- 解冻阶段 (250 epochs): ~33 小时
-- mAP 评估 (30 次): ~1.5 小时
-- **总计**: ~38.5 小时
+#### FRED RGB 模态（优化后，150 epochs）
+- 冻结阶段 (30 epochs): ~1.25 小时
+- 解冻阶段 (120 epochs): ~9 小时
+- mAP 评估 (10 次): ~0.5 小时
+- **总计**: ~10.75 小时（原 38.5 小时，加速 3.6 倍）
 
 ---
 
@@ -671,6 +556,74 @@ python predict_fred.py --modality event
 
 ---
 
+## 可视化工具
+
+### FRED 序列可视化
+
+#### 快速生成视频（推荐）
+
+```bash
+# 快速预览（前100帧）
+./quick_visualize.sh 0 rgb 100
+
+# 完整序列
+./quick_visualize.sh 0 rgb
+
+# Event 模态
+./quick_visualize.sh 0 event 100
+```
+
+#### 使用 Python 脚本
+
+```bash
+# 快速预览（50帧，约2秒）
+python scripts/visualize_fred_sequences.py \
+    --modality rgb \
+    --sequence 0 \
+    --export-video \
+    --no-window \
+    --max-frames 50
+
+# 完整序列（1316帧，约15秒）
+python scripts/visualize_fred_sequences.py \
+    --modality rgb \
+    --sequence 21 \
+    --export-video \
+    --no-window
+
+# RGB 和 Event 对比视频
+python scripts/visualize_fred_sequences.py \
+    --comparison \
+    --sequence 0
+```
+
+#### 性能表现（RTX 3090）
+
+| 序列 | 帧数 | 处理时间 | 速度 | 视频大小 |
+|------|------|---------|------|---------|
+| 序列 0（预览） | 50 | 1.3秒 | 38 FPS | 1.2 MB |
+| 序列 21（完整） | 1316 | 14.9秒 | 93 FPS | 9.9 MB |
+| 序列 0（完整） | 1909 | ~20秒 | 95 FPS | ~15 MB |
+
+### 可视化特定图片
+
+```bash
+# 使用交互式脚本（推荐）
+bash scripts/visualize_images.sh
+
+# 或直接使用命令行
+# 通过图片ID可视化
+python scripts/visualize_specific_images.py --modality rgb --split train --image_ids 1 2 3
+
+# 通过文件名可视化
+python scripts/visualize_specific_images.py --modality rgb --split train --filenames Video_0_16_03_03
+
+# 通过正则表达式可视化
+python scripts/visualize_specific_images.py --modality rgb --split train --pattern "Video_0_16_03_.*"
+```
+
+---
+
 ## 监控训练
 
 ### 方法1: 实时查看训练输出
@@ -722,9 +675,14 @@ Unfreeze_batch_size = 4
 # 方案2: 减小输入尺寸
 input_shape = [416, 416]
 
-# 方案3: 禁用 mAP 评估（FRED 训练）
+# 方案3: 启用 FP16
+FP16 = True
+
+# 方案4: 禁用 mAP 评估（FRED 训练）
 python train_fred.py --modality rgb --no_eval_map
 ```
+
+**注意**: `batch_size` 最小为 2（受 BatchNorm 影响）
 
 #### h5py 版本问题
 
@@ -743,6 +701,13 @@ pip install h5py==2.10.0
 ```bash
 pip install Pillow==8.2.0
 ```
+
+#### No module named 'xxx'
+
+**解决方案**:
+- 检查是否激活了正确的 conda 环境
+- 使用 `pip install xxx` 安装缺失的库
+- 对于项目内部模块（如 utils），检查当前工作目录是否为项目根目录
 
 ### 2. 训练问题
 
@@ -818,16 +783,31 @@ yolov5-pytorch/
 ├── nets/                    # 网络模型定义
 │   ├── yolo.py             # YOLOv5 主网络
 │   ├── CSPdarknet.py       # CSPDarknet 主干
+│   ├── ConvNext.py         # ConvNeXt 主干
+│   ├── Swin_transformer.py # Swin Transformer 主干
 │   └── yolo_training.py    # 训练相关函数
 ├── utils/                   # 工具函数
 │   ├── dataloader.py       # 数据加载器
 │   ├── utils_fit.py        # 训练循环
-│   └── utils_map.py        # mAP 计算
+│   ├── utils_map.py        # mAP 计算
+│   └── callbacks_coco.py   # COCO 数据集回调
+├── utils_coco/             # COCO 数据集工具
 ├── model_data/             # 模型权重和配置文件
 ├── logs/                   # 训练日志和权重保存目录
 ├── datasets/               # 数据集目录
 │   ├── nps/               # NPS 数据集配置
 │   └── fred_coco/         # FRED COCO 格式数据集
+│       ├── rgb/           # RGB 模态
+│       └── event/         # Event 模态
+├── scripts/               # 工具脚本
+│   ├── visualize_dataset_validation.py  # 数据集验证可视化
+│   ├── visualize_specific_images.py     # 特定图片可视化
+│   ├── visualize_fred_sequences.py      # FRED 序列可视化
+│   ├── validate_dataset.sh              # 数据集验证快捷脚本
+│   ├── visualize_images.sh              # 图片可视化快捷脚本
+│   ├── start_training.sh                # 训练快捷脚本
+│   ├── quick_eval.sh                    # 评估快捷脚本
+│   └── README.md                        # 脚本说明文档
 ├── train.py               # 标准训练脚本
 ├── train_fred.py          # FRED 数据集训练脚本
 ├── predict.py             # 标准预测脚本
@@ -835,6 +815,8 @@ yolov5-pytorch/
 ├── eval_fred.py           # FRED 数据集评估脚本
 ├── get_map.py             # mAP 评估脚本
 ├── config_fred.py         # FRED 训练配置
+├── convert_fred_to_coco_v2.py  # FRED 数据集转换脚本 V2
+├── quick_visualize.sh     # 快速可视化脚本
 └── README.md              # 本文档
 ```
 
@@ -848,21 +830,17 @@ yolov5-pytorch/
 python utils_coco/coco_annotation.py
 ```
 
-### FRED 数据集转换
-
-```bash
-# 转换 RGB 模态
-python convert_fred_to_coco.py --modality rgb
-
-# 转换 Event 模态
-python convert_fred_to_coco.py --modality event
-```
-
 ### 模型结构查看
 
 ```bash
 python summary.py
 ```
+
+### 自定义主干网络
+
+1. 在 `nets/` 目录下添加新的主干网络文件
+2. 在 `nets/yolo.py` 中导入并集成
+3. 修改 `train.py` 和 `yolo.py` 中的 `backbone` 参数
 
 ---
 
@@ -870,8 +848,7 @@ python summary.py
 
 - **原始仓库**: https://github.com/bubbliiiing/yolov5-pytorch
 - **相关博客**: https://blog.csdn.net/weixin_44791964
-- **常见问题汇总**: 见项目根目录 `常见问题汇总.md`
-- **详细开发指南**: 见项目根目录 `AGENTS.md`
+- **常见问题汇总**: https://blog.csdn.net/weixin_44791964/article/details/107517428
 
 ---
 
@@ -882,11 +859,12 @@ python summary.py
 1. **预训练权重**: 对于 99% 的情况都必须使用，不使用会导致训练效果很差
 2. **数据集大小**: 建议至少 500 张图片，小数据集需要更长的训练时间
 3. **显存管理**: 根据显卡显存调整 `batch_size` 和 `input_shape`
-4. **训练时长**: SGD 优化器需要更长的训练时间（300+ epochs）
+4. **训练时长**: SGD 优化器需要更长的训练时间（150+ epochs）
 5. **评估指标**: mAP 是主要评估指标，Loss 仅用于判断收敛
 6. **版本兼容**: 注意 PyTorch、CUDA、cuDNN 版本的兼容性
 7. **h5py 版本**: 必须使用 2.10.0
 8. **Pillow 版本**: 建议使用 8.2.0
+9. **数据验证**: 训练前务必验证数据集标注正确性
 
 ### FRED 数据集特点
 
@@ -894,6 +872,7 @@ python summary.py
 - **小目标**: 平均边界框 50x34 像素
 - **两种模态**: RGB (19,471 张) 和 Event (28,714 张)
 - **Event 边界框**: 约 3% 的边界框被裁剪（原始标注超出边界），这是正常的
+- **性能优化**: 使用 FP16 混合精度训练可加速 3.6 倍
 
 ---
 
@@ -918,16 +897,28 @@ python get_map.py
 ### FRED 训练流程
 
 ```bash
-# 1. 训练 RGB 模态
+# 1. 一键设置（推荐）
+./setup_fred_dataset.sh
+
+# 2. 或手动转换数据集
+python convert_fred_to_coco_v2.py --modality both
+
+# 3. 验证数据集
+bash scripts/validate_dataset.sh
+
+# 4. 快速验证训练（2个epoch）
+python train_fred.py --modality rgb --quick_test
+
+# 5. 完整训练 RGB 模态
 python train_fred.py --modality rgb
 
-# 2. 评估模型
+# 6. 评估模型
 python eval_fred.py --modality rgb
 
-# 3. 预测测试
+# 7. 预测测试
 python predict_fred.py --modality rgb
 
-# 4. 查看训练曲线
+# 8. 查看训练曲线
 tensorboard --logdir logs/fred_rgb/
 ```
 
@@ -943,8 +934,14 @@ python summary.py
 # 计算先验框
 python kmeans_for_anchors.py
 
-# 可视化 FRED 样本
-python visualize_dataset.py --modality rgb --num_samples 10
+# 验证数据集
+bash scripts/validate_dataset.sh
+
+# 可视化 FRED 序列
+./quick_visualize.sh 0 rgb 100
+
+# 可视化特定图片
+bash scripts/visualize_images.sh
 ```
 
 ---
@@ -955,7 +952,7 @@ python visualize_dataset.py --modality rgb --num_samples 10
 
 ---
 
-**最后更新**: 2025-10-24  
+**最后更新**: 2025-11-01  
 **项目路径**: `/mnt/data/code/yolov5-pytorch`  
 **Python 环境**: `/home/yz/miniforge3/envs/torch/bin/python3`  
 **系统配置**: RTX 3090 / CUDA 12.4 / PyTorch 2.4.1

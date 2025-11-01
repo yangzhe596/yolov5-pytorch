@@ -35,8 +35,11 @@ fi
 echo -e "${BLUE}======================================${NC}"
 echo ""
 
+# 获取脚本所在目录
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
 # 构建命令
-CMD="$PYTHON visualize_fred_sequences.py --modality $MODALITY --sequence $SEQUENCE --export-video --no-window"
+CMD="$PYTHON $SCRIPT_DIR/scripts/visualize_fred_sequences.py --modality $MODALITY --sequence $SEQUENCE --export-video --no-window"
 
 if [ -n "$MAX_FRAMES" ]; then
     CMD="$CMD --max-frames $MAX_FRAMES"

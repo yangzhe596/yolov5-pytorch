@@ -43,6 +43,7 @@ if __name__ == "__main__":
     # 添加命令行参数解析
     parser = argparse.ArgumentParser()
     parser.add_argument('--eval_only', action='store_true', help='只进行评估，不进行训练')
+    parser.add_argument('--quick_test', action='store_true', help='快速验证模式：仅运行100个batch验证功能正确性')
     args = parser.parse_args()
 
     #---------------------------------#
@@ -209,6 +210,25 @@ phi             = 'm'
     #                   默认先冻结主干训练后解冻训练。
     #------------------------------------------------------------------#
     Freeze_Train        = True
+    
+    #------------------------------------------------------------------#
+    #   快速验证模式：仅运行100个batch快速验证功能
+    #------------------------------------------------------------------#
+    if args.quick_test:
+        print("\n" + "="*70)
+        print("⚡ 快速验证模式")
+        print("="*70)
+        print("仅运行 2 个 epoch，每个 epoch 最多 100 个 batch")
+        print("用于快速验证训练流程是否正确")
+        print("="*70 + "\n")
+        
+        Init_Epoch = 0
+        Freeze_Epoch = 1
+        UnFreeze_Epoch = 2
+        Freeze_Train = True
+        eval_flag = True
+        eval_period = 1
+        save_period = 1
 
     #------------------------------------------------------------------#
     #   其它训练参数：学习率、优化器、学习率下降有关
@@ -523,8 +543,10 @@ phi             = 'm'
         #   记录eval的map曲线
         #----------------------#
         if local_rank == 0:
+            # 快速验证模式：限制评估样本数量
+            max_eval_samples = 100 if args.quick_test else None
             eval_callback   = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, test_lines, log_dir, Cuda, \
-                                            eval_flag=eval_flag, period=eval_period)
+                                            eval_flag=eval_flag, period=eval_period, max_eval_samples=max_eval_samples)
         else:
             eval_callback   = None
         
@@ -536,7 +558,8 @@ phi             = 'm'
             model.eval()  # 设置模型为评估模式
             with torch.no_grad():
                 # 这里可以添加评估代码，例如计算mAP等
-                eval_callback = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, test_lines, log_dir, Cuda, eval_flag=True, period=eval_period)
+                max_eval_samples = 100 if args.quick_test else None
+                eval_callback = EvalCallback(model, input_shape, anchors, anchors_mask, class_names, num_classes, test_lines, log_dir, Cuda, eval_flag=True, period=eval_period, max_eval_samples=max_eval_samples)
                 eval_callback.on_epoch_end(epoch=0, model_eval=model)  # 传递当前epoch和模型
         else:
             # 进行训练
@@ -593,7 +616,9 @@ phi             = 'm'
 
                 set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
 
-                fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
+                # 快速验证模式：限制batch数量
+                max_batches = 100 if args.quick_test else None
+                fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback, optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val, UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank, max_batches=max_batches)
                 
                 if distributed:
                     dist.barrier()

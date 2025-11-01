@@ -42,6 +42,8 @@ if __name__ == "__main__":
                         help='禁用mAP评估以加快训练速度')
     parser.add_argument('--resume', action='store_true',
                         help='从最佳权重继续训练')
+    parser.add_argument('--quick_test', action='store_true',
+                        help='快速验证模式：仅运行100个batch验证功能正确性')
     args = parser.parse_args()
     
     # 如果指定了 --no_eval_map，则禁用mAP评估
@@ -128,6 +130,23 @@ if __name__ == "__main__":
     eval_flag = cfg.EVAL_FLAG
     eval_period = cfg.EVAL_PERIOD
     num_workers = cfg.NUM_WORKERS
+    
+    # 快速验证模式
+    if args.quick_test:
+        print("\n" + "="*70)
+        print("⚡ 快速验证模式")
+        print("="*70)
+        print("仅运行 2 个 epoch，每个 epoch 最多 100 个 batch")
+        print("用于快速验证训练流程是否正确")
+        print("="*70 + "\n")
+        
+        Init_Epoch = 0
+        Freeze_Epoch = 1
+        UnFreeze_Epoch = 2
+        Freeze_Train = True
+        eval_flag = True
+        eval_period = 1
+        save_period = 1
     
     # 创建保存目录
     os.makedirs(save_dir, exist_ok=True)
@@ -357,6 +376,9 @@ if __name__ == "__main__":
         
         # 评估回调（使用测试集）
         if local_rank == 0:
+            # 快速验证模式：限制评估样本数量
+            max_eval_samples = 100 if args.quick_test else None
+            
             # 根据命令行参数决定是否使用完整的mAP评估
             if args.eval_map and eval_flag:
                 eval_callback = CocoEvalCallback(
@@ -377,11 +399,14 @@ if __name__ == "__main__":
                     letterbox_image=cfg.LETTERBOX_IMAGE,
                     MINOVERLAP=cfg.MINOVERLAP,
                     eval_flag=eval_flag,
-                    period=eval_period
+                    period=eval_period,
+                    max_eval_samples=max_eval_samples
                 )
                 print("\n✓ 使用COCO格式的mAP评估（会增加训练时间）")
                 print(f"  - 评估周期: 每 {eval_period} 个epoch")
                 print(f"  - 评估数据集: 测试集 ({test_json})")
+                if max_eval_samples:
+                    print(f"  - ⚡ 快速验证: 仅评估 {max_eval_samples} 个样本")
             else:
                 # 使用简化版回调（只记录epoch，不计算mAP）
                 eval_callback = SimplifiedEvalCallback(log_dir, eval_flag=False, period=1)
@@ -445,9 +470,11 @@ if __name__ == "__main__":
                 
                 set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
                 
+                # 快速验证模式：限制batch数量
+                max_batches = 100 if args.quick_test else None
                 fit_one_epoch(model_train, model, ema, yolo_loss, loss_history, eval_callback,
                             optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val,
-                            UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank)
+                            UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, local_rank, max_batches=max_batches)
                 
                 if distributed:
                     dist.barrier()
