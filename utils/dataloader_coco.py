@@ -1,6 +1,7 @@
 """
 COCO格式数据加载器
 支持FRED数据集的COCO格式
+已优化Mosaic数据增强性能
 """
 import json
 import os
@@ -9,10 +10,9 @@ from random import sample, shuffle
 import cv2
 import numpy as np
 import torch
-from PIL import Image
 from torch.utils.data.dataset import Dataset
 
-from utils.utils import cvtColor, preprocess_input
+from utils.utils import preprocess_input
 
 
 class CocoYoloDataset(Dataset):
@@ -133,16 +133,42 @@ class CocoYoloDataset(Dataset):
     def rand(self, a=0, b=1):
         return np.random.rand() * (b - a) + a
     
+    def _load_image_cv2(self, image_path):
+        """使用cv2加载图像（比PIL快）"""
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError(f"无法读取图像: {image_path}")
+        # cv2读取的是BGR格式，需要转换为RGB
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        return image
+    
+    def _apply_hsv_augmentation(self, image, hue=0.1, sat=0.7, val=0.4):
+        """优化的HSV色域变换"""
+        r = np.random.uniform(-1, 1, 3) * [hue, sat, val] + 1
+        hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+        h, s, v = cv2.split(hsv)
+        
+        dtype = image.dtype
+        x = np.arange(0, 256, dtype=np.float32)
+        lut_hue = ((x * r[0]) % 180).astype(dtype)
+        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
+        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
+        
+        h = cv2.LUT(h, lut_hue)
+        s = cv2.LUT(s, lut_sat)
+        v = cv2.LUT(v, lut_val)
+        
+        hsv = cv2.merge([h, s, v])
+        image = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+        return image
+    
     def get_random_data(self, index, input_shape, jitter=.3, hue=.1, sat=0.7, val=0.4, random=True):
         """获取随机数据（单张图片）"""
         info = self.image_infos[index]
         
-        # 读取图像
-        image = Image.open(info['path'])
-        image = cvtColor(image)
-        
-        # 获得图像的高宽与目标高宽
-        iw, ih = image.size
+        # 使用cv2读取图像
+        image = self._load_image_cv2(info['path'])
+        ih, iw = image.shape[:2]
         h, w = input_shape
         
         # 获得预测框
@@ -156,10 +182,9 @@ class CocoYoloDataset(Dataset):
             dy = (h-nh)//2
             
             # 将图像多余的部分加上灰条
-            image = image.resize((nw,nh), Image.BICUBIC)
-            new_image = Image.new('RGB', (w,h), (128,128,128))
-            new_image.paste(image, (dx, dy))
-            image = new_image
+            image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            new_image = np.full((h, w, 3), 128, dtype=np.uint8)
+            new_image[dy:dy+nh, dx:dx+nw, :] = image
             
             # 调整边界框
             if len(box) > 0:
@@ -173,7 +198,7 @@ class CocoYoloDataset(Dataset):
                 box_h = box[:, 3] - box[:, 1]
                 box = box[np.logical_and(box_w>1, box_h>1)]
             
-            return image, box
+            return new_image, box
         
         # 对图像进行缩放并且进行长和宽的扭曲
         new_ar = iw/ih * self.rand(1-jitter,1+jitter) / self.rand(1-jitter,1+jitter)
@@ -184,32 +209,20 @@ class CocoYoloDataset(Dataset):
         else:
             nw = int(scale*w)
             nh = int(nw/new_ar)
-        image = image.resize((nw,nh), Image.BICUBIC)
+        image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
         
         # 将图像多余的部分加上灰条
         dx = int(self.rand(0, w-nw))
         dy = int(self.rand(0, h-nh))
-        new_image = Image.new('RGB', (w,h), (128,128,128))
-        new_image.paste(image, (dx, dy))
-        image = new_image
+        new_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        new_image[dy:dy+nh, dx:dx+nw, :] = image
         
         # 翻转图像
         flip = self.rand()<.5
-        if flip: image = image.transpose(Image.FLIP_LEFT_RIGHT)
+        if flip: new_image = cv2.flip(new_image, 1)
         
-        image_data = np.array(image, np.uint8)
         # 对图像进行色域变换
-        r = np.random.uniform(-1, 1, 3) * [hue, sat, val] + 1
-        hue, sat, val = cv2.split(cv2.cvtColor(image_data, cv2.COLOR_RGB2HSV))
-        dtype = image_data.dtype
-        
-        x = np.arange(0, 256, dtype=r.dtype)
-        lut_hue = ((x * r[0]) % 180).astype(dtype)
-        lut_sat = np.clip(x * r[1], 0, 255).astype(dtype)
-        lut_val = np.clip(x * r[2], 0, 255).astype(dtype)
-        
-        image_data = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
-        image_data = cv2.cvtColor(image_data, cv2.COLOR_HSV2RGB)
+        image_data = self._apply_hsv_augmentation(new_image, hue, sat, val)
         
         # 调整边界框
         if len(box)>0:
@@ -227,29 +240,31 @@ class CocoYoloDataset(Dataset):
         return image_data, box
     
     def get_random_data_with_Mosaic(self, indices, input_shape):
-        """Mosaic数据增强"""
+        """优化的Mosaic数据增强"""
         h, w = input_shape
         min_offset_x = self.rand(0.3, 0.7)
         min_offset_y = self.rand(0.3, 0.7)
         
-        image_datas = []
-        box_datas = []
-        index = 0
+        cutx = int(w * min_offset_x)
+        cuty = int(h * min_offset_y)
         
-        for i in indices:
+        # 预分配Mosaic图像（避免多次内存分配）
+        mosaic_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        box_datas = []
+        
+        for idx, i in enumerate(indices):
             info = self.image_infos[i]
             
-            # 读取图像
-            image = Image.open(info['path'])
-            image = cvtColor(image)
+            # 使用cv2读取图像
+            image = self._load_image_cv2(info['path'])
+            ih, iw = image.shape[:2]
             
-            iw, ih = image.size
             box = info['boxes'].copy()
             
             # 翻转图像
             flip = self.rand()<.5
             if flip and len(box)>0:
-                image = image.transpose(Image.FLIP_LEFT_RIGHT)
+                image = cv2.flip(image, 1)
                 box[:, [0,2]] = iw - box[:, [2,0]]
             
             # 对图像进行缩放
@@ -261,28 +276,36 @@ class CocoYoloDataset(Dataset):
             else:
                 nw = int(scale*w)
                 nh = int(nw/new_ar)
-            image = image.resize((nw, nh), Image.BICUBIC)
+            image = cv2.resize(image, (nw, nh), interpolation=cv2.INTER_LINEAR)
             
-            # 将图像进行放置
-            if index == 0:
-                dx = int(w*min_offset_x) - nw
-                dy = int(h*min_offset_y) - nh
-            elif index == 1:
-                dx = int(w*min_offset_x)
-                dy = int(h*min_offset_y) - nh
-            elif index == 2:
-                dx = int(w*min_offset_x) - nw
-                dy = int(h*min_offset_y)
-            elif index == 3:
-                dx = int(w*min_offset_x)
-                dy = int(h*min_offset_y)
+            # 计算放置位置
+            if idx == 0:  # 左上
+                dx = cutx - nw
+                dy = cuty - nh
+            elif idx == 1:  # 右上
+                dx = cutx
+                dy = cuty - nh
+            elif idx == 2:  # 左下
+                dx = cutx - nw
+                dy = cuty
+            else:  # 右下
+                dx = cutx
+                dy = cuty
             
-            new_image = Image.new('RGB', (w,h), (128,128,128))
-            new_image.paste(image, (dx, dy))
-            image_data = np.array(new_image)
+            # 计算有效区域
+            x1a = max(0, dx)
+            y1a = max(0, dy)
+            x2a = min(w, dx + nw)
+            y2a = min(h, dy + nh)
             
-            index = index + 1
-            box_data = []
+            x1b = max(0, -dx)
+            y1b = max(0, -dy)
+            x2b = min(nw, w - dx)
+            y2b = min(nh, h - dy)
+            
+            # 直接复制到Mosaic图像（避免创建临时图像）
+            if x2a > x1a and y2a > y1a:
+                mosaic_image[y1a:y2a, x1a:x2a, :] = image[y1b:y2b, x1b:x2b, :]
             
             # 调整边界框
             if len(box)>0:
@@ -295,28 +318,20 @@ class CocoYoloDataset(Dataset):
                 box_w = box[:, 2] - box[:, 0]
                 box_h = box[:, 3] - box[:, 1]
                 box = box[np.logical_and(box_w>1, box_h>1)]
-                box_data = np.zeros((len(box),5))
-                box_data[:len(box)] = box
-            
-            image_datas.append(image_data)
-            box_datas.append(box_data)
-        
-        # 将图像分割，放在一起
-        cutx = int(w * min_offset_x)
-        cuty = int(h * min_offset_y)
-        
-        new_image = np.zeros([h, w, 3])
-        new_image[:cuty, :cutx, :] = image_datas[0][:cuty, :cutx, :]
-        new_image[cuty:, :cutx, :] = image_datas[2][cuty:, :cutx, :]
-        new_image[cuty:, cutx:, :] = image_datas[3][cuty:, cutx:, :]
-        new_image[:cuty, cutx:, :] = image_datas[1][:cuty, cutx:, :]
-        
-        new_image = np.array(new_image, np.uint8)
+                
+                if len(box) > 0:
+                    box_data = np.zeros((len(box),5))
+                    box_data[:len(box)] = box
+                    box_datas.append(box_data)
+                else:
+                    box_datas.append(np.array([]))
+            else:
+                box_datas.append(np.array([]))
         
         # 对框进行进一步的处理
         new_boxes = np.array(self.merge_bboxes(box_datas, cutx, cuty))
         
-        return new_image, new_boxes
+        return mosaic_image, new_boxes
     
     def merge_bboxes(self, bboxes, cutx, cuty):
         """合并Mosaic的边界框"""

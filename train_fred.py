@@ -130,6 +130,8 @@ if __name__ == "__main__":
     eval_flag = cfg.EVAL_FLAG
     eval_period = cfg.EVAL_PERIOD
     num_workers = cfg.NUM_WORKERS
+    prefetch_factor = cfg.PREFETCH_FACTOR
+    persistent_workers = cfg.PERSISTENT_WORKERS
     
     # 快速验证模式
     if args.quick_test:
@@ -290,6 +292,7 @@ if __name__ == "__main__":
             Freeze_Train=Freeze_Train, Init_lr=Init_lr, Min_lr=Min_lr,
             optimizer_type=optimizer_type, momentum=momentum, lr_decay_type=lr_decay_type,
             save_period=save_period, save_dir=save_dir, num_workers=num_workers,
+            prefetch_factor=prefetch_factor, persistent_workers=persistent_workers,
             num_train=num_train, num_val=num_val
         )
         
@@ -367,12 +370,16 @@ if __name__ == "__main__":
         gen = DataLoader(train_dataset, shuffle=shuffle, batch_size=batch_size, 
                         num_workers=num_workers, pin_memory=True, drop_last=True,
                         collate_fn=coco_dataset_collate, sampler=train_sampler,
-                        worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                        worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed),
+                        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                        persistent_workers=persistent_workers if num_workers > 0 else False)
         
         gen_val = DataLoader(val_dataset, shuffle=shuffle, batch_size=batch_size,
                             num_workers=num_workers, pin_memory=True, drop_last=True,
                             collate_fn=coco_dataset_collate, sampler=val_sampler,
-                            worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                            worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed),
+                            prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                            persistent_workers=persistent_workers if num_workers > 0 else False)
         
         # 评估回调（使用测试集）
         if local_rank == 0:
@@ -453,12 +460,16 @@ if __name__ == "__main__":
                     gen = DataLoader(train_dataset, shuffle=shuffle, batch_size=batch_size,
                                     num_workers=num_workers, pin_memory=True, drop_last=True,
                                     collate_fn=coco_dataset_collate, sampler=train_sampler,
-                                    worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                                    worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed),
+                                    prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                                    persistent_workers=persistent_workers if num_workers > 0 else False)
                     
                     gen_val = DataLoader(val_dataset, shuffle=shuffle, batch_size=batch_size,
                                         num_workers=num_workers, pin_memory=True, drop_last=True,
                                         collate_fn=coco_dataset_collate, sampler=val_sampler,
-                                        worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed))
+                                        worker_init_fn=partial(worker_init_fn, rank=rank, seed=seed),
+                                        prefetch_factor=prefetch_factor if num_workers > 0 else None,
+                                        persistent_workers=persistent_workers if num_workers > 0 else False)
                     
                     UnFreeze_flag = True
                 

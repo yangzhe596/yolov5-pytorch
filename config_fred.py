@@ -176,7 +176,9 @@ EVAL_FLAG = True
 EVAL_PERIOD = 5  # 调整评估周期：15 -> 5，适配50轮训练
 
 # 数据加载（针对多核CPU优化）
-NUM_WORKERS = 16  # 增加：4 -> 8，加速数据加载
+NUM_WORKERS = 8              # CPU核心数的一半，避免过度占用
+PREFETCH_FACTOR = 4          # 每个worker预取4个batch，加速数据流
+PERSISTENT_WORKERS = True    # 保持workers存活，避免epoch间重复创建进程
 
 # ============================================================================
 # 评估配置
