@@ -147,6 +147,9 @@ def evaluate_model(model_path, modality='rgb',
     
     print("\n开始评估...")
     
+    # 统计缺失图片
+    missing_images = 0
+    
     # 遍历测试集
     for img_info in tqdm(images, desc="处理图片"):
         # 只使用文件名（不包含目录），避免路径问题
@@ -155,7 +158,7 @@ def evaluate_model(model_path, modality='rgb',
         img_path = os.path.join(test_img_dir, file_name)
         
         if not os.path.exists(img_path):
-            print(f"⚠ 图片不存在: {img_path}")
+            missing_images += 1
             continue
         
         # 读取图像
@@ -216,6 +219,10 @@ def evaluate_model(model_path, modality='rgb',
                     obj_name = class_names[class_idx]
                     
                     f.write(f"{obj_name} {left} {top} {right} {bottom}\n")
+    
+    # 报告缺失图片
+    if missing_images > 0:
+        print(f"\n⚠ 警告: {missing_images} 张图片未找到")
     
     # 计算mAP
     print("\n计算mAP...")

@@ -17,7 +17,7 @@ import os
 # ============================================================================
 
 # FRED 数据集根目录（可通过环境变量覆盖）
-FRED_ROOT = os.environ.get('FRED_ROOT', '/mnt/data/datasets/fred')
+FRED_ROOT = os.environ.get('FRED_ROOT', '/home/yz/datasets/fred')
 
 # COCO 格式数据集根目录
 COCO_ROOT = 'datasets/fred_coco'

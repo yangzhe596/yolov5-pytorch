@@ -215,7 +215,23 @@ class CocoYoloDataset(Dataset):
         dx = int(self.rand(0, w-nw))
         dy = int(self.rand(0, h-nh))
         new_image = np.full((h, w, 3), 128, dtype=np.uint8)
-        new_image[dy:dy+nh, dx:dx+nw, :] = image
+        
+        # 计算有效的放置区域，避免索引越界
+        if nw > w or nh > h:
+            # 如果缩放后的图像大于目标尺寸，需要裁剪
+            src_x1 = max(0, -dx)
+            src_y1 = max(0, -dy)
+            src_x2 = min(nw, w - dx)
+            src_y2 = min(nh, h - dy)
+            
+            dst_x1 = max(0, dx)
+            dst_y1 = max(0, dy)
+            dst_x2 = min(w, dx + nw)
+            dst_y2 = min(h, dy + nh)
+            
+            new_image[dst_y1:dst_y2, dst_x1:dst_x2, :] = image[src_y1:src_y2, src_x1:src_x2, :]
+        else:
+            new_image[dy:dy+nh, dx:dx+nw, :] = image
         
         # 翻转图像
         flip = self.rand()<.5

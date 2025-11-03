@@ -56,17 +56,18 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10,
                 f.write(f"{class_name}\n")
         print(f"✓ 已创建类别文件: {classes_file}")
     
-    yolo = YOLO(
-        model_path=model_path,
-        classes_path=classes_file,
-        anchors_path=cfg.ANCHORS_PATH,
-        input_shape=cfg.INPUT_SHAPE,
-        backbone=cfg.BACKBONE,
-        phi=cfg.PHI,
-        confidence=0.5,  # 预测时使用较高的置信度
-        nms_iou=0.3,
-        cuda=cfg.CUDA
-    )
+    # 使用字典方式传递参数给 YOLO 类
+    yolo = YOLO(**{
+        'model_path': model_path,
+        'classes_path': classes_file,
+        'anchors_path': cfg.ANCHORS_PATH,
+        'input_shape': cfg.INPUT_SHAPE,
+        'backbone': cfg.BACKBONE,
+        'phi': cfg.PHI,
+        'confidence': 0.5,  # 预测时使用较高的置信度
+        'nms_iou': 0.3,
+        'cuda': cfg.CUDA
+    })
     
     # 加载COCO标注
     ann_file = cfg.get_annotation_path(modality, split)
