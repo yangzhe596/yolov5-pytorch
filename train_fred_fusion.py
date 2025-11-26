@@ -645,6 +645,8 @@ def fit_one_epoch_fusion(model_train, model, ema, yolo_loss, loss_history, eval_
     
     except Exception as e:
         print(f'训练过程中发生错误: {e}')
+        import traceback
+        traceback.print_exc()
         raise
 
 def set_optimizer_lr(optimizer, lr_scheduler_func, epoch):
@@ -738,10 +740,10 @@ if __name__ == "__main__":
     
     # 训练配置
     Init_Epoch          = 0
-    Freezed_Epoch       = 50
+    Freezed_Epoch       = 1
     UnFreeze_Epoch      = 300
     
-    eval_period         = 1  # 每 5 个 epoch 评估一次 mAP
+    eval_period         = 5  # 每 5 个 epoch 评估一次 mAP
     save_period         = 10 # 每 10 个 epoch 保存一次模型
     
     Freeze_batch_size   = 8
@@ -823,20 +825,25 @@ if __name__ == "__main__":
     
     # 检查数据集
     # 计算 epoch 长度
-    train_num = len(open(train_json, 'r').read().split('images')[0].split('"id"')) if os.path.exists(train_json) else 0
-    val_num = len(open(val_json, 'r').read().split('images')[0].split('"id"')) if os.path.exists(val_json) else 0
+    with open(train_json, 'r') as f:
+        train_data = json.load(f)
+        train_num = len(train_data['images'])
+    
+    with open(val_json, 'r') as f:
+        val_data = json.load(f)
+        val_num = len(val_data['images'])
     
     # 创建 Fusion 数据集（使用融合标注）
     fusion_train_set = FusionYoloDataset(
         train_json, fred_root, input_shape, num_classes, anchors, anchors_mask,
-        epoch_length=train_num // Freeze_batch_size, 
+        epoch_length=max(train_num // Freeze_batch_size, 1), 
         mosaic=True, mixup=True, mosaic_prob=cfg.MOSAIC_PROB, mixup_prob=cfg.MIXUP_PROB, train=True,
         modality=fusion_modality, use_fusion_info=True
     ) if not args.eval_only else None
     
     fusion_val_set = FusionYoloDataset(
         val_json, fred_root, input_shape, num_classes, anchors, anchors_mask,
-        epoch_length=val_num // Unfreeze_batch_size,
+        epoch_length=max(val_num // Unfreeze_batch_size, 1),
         mosaic=False, mixup=False, mosaic_prob=0, mixup_prob=0, train=False,
         modality='rgb', use_fusion_info=True  # 验证集使用 RGB 模式
     )
@@ -858,12 +865,15 @@ if __name__ == "__main__":
             persistent_workers=persistent_workers, prefetch_factor=prefetch_factor
         )
         
-        epoch_step = min(len(gen), 10 if args.quick_test else len(gen))
-        epoch_step_val = min(len(gen_val), 10 if args.quick_test else len(gen_val))
+        epoch_step = max(len(gen), 1)
+        epoch_step_val = max(len(gen_val), 1)
         
-        # 如果只有验证集
-        if epoch_step == 0 or epoch_step_val == 0:
-            raise ValueError("数据集过小，无法进行训练，请检查数据集")
+        if args.quick_test:
+            epoch_step = min(epoch_step, 10)
+            epoch_step_val = min(epoch_step_val, 10)
+        
+        print(f"初始化：数据集大小 train={train_num}, val={val_num}")
+        print(f"初始化：epoch_step={epoch_step}, epoch_step_val={epoch_step_val}")
     else:
         # 评估模式
         gen_val = DataLoader(
@@ -1042,141 +1052,130 @@ if __name__ == "__main__":
         print("⚠️  评估模式：只进行验证集评估，不进行训练")
         print("-"*80)
     
-    # === 冻结训练阶段 ===
+    # === 完整训练循环将在下面实现 ===
+    
+    # === 完整训练循环（冻结+解冻） ===
     
     if not args.eval_only:
-        if Freeze_Train and not args.freeze_training and not args.quick_test:
-            print("\n" + "="*80)
-            print("第一阶段：冻结训练 (0-%d epoch)" % Freezed_Epoch)
-            print("="*80)
-            print("  - 冻结主干网络，只训练检测头")
-            print("  - 显存占用较小")
-            print("  - 适合：显存不足、快速收敛")
-            
-            # 冻结主干网络
-            for param in model.backbone_rgb.parameters():
-                param.requires_grad = False
-            for param in model.backbone_event.parameters():
-                param.requires_grad = False
-            for param in model.compression_convs.parameters():
-                param.requires_grad = False
-            
-            # 优化器优化所有未冻结的参数
-            optimizer = optim.SGD(filter(lambda p: p.requires_grad, model_train.parameters()), 
-                                 Init_lr, momentum=momentum, weight_decay=weight_decay)
-            
-            # 重新创建 scaler 以适应新的 optimizer
-            scaler = torch.cuda.amp.GradScaler(enabled=fp16)
-            
-            # 训练参数
-            batch_size = Freeze_batch_size
-            UnFreeze_Epoch = Freezed_Epoch
-            
-            # 学习率调整
-            lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr, Min_lr, UnFreeze_Epoch)
-            
-            # 如果是从头开始训练（没有预训练权重）
-            if model_path == '':
-                batch_size = 2
-                Init_Epoch = 0
-                UnFreeze_Epoch = 100
-                lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_Epoch, Min_lr, UnFreeze_Epoch)
-            
-            # 开始训练
-            for epoch in range(Init_Epoch, Freezed_Epoch):
-                gen.dataset.mosaic = True
-                set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
+        # 计算数据集大小
+        num_train = train_num
+        num_val = val_num
+        
+        # 初始化优化器
+        optimizer = {
+            'adam'  : optim.Adam(model_train.parameters(), Init_lr, betas=(momentum, 0.999), weight_decay=weight_decay),
+            'sgd'   : optim.SGD(model_train.parameters(), Init_lr, momentum=momentum, nesterov=True, weight_decay=weight_decay)
+        }[optimizer_type]
+        
+        # 训练循环
+        UnFreeze_flag = False
+        
+        for epoch in range(Init_Epoch, UnFreeze_Epoch):
+            # 解冻训练
+            if epoch >= Freezed_Epoch and not UnFreeze_flag and Freeze_Train and not args.freeze_training and not args.quick_test:
+                print("\n" + "="*80)
+                print("第二阶段：解冻训练 (%d-%d epoch)" % (Freezed_Epoch, UnFreeze_Epoch))
+                print("="*80)
+                print("  - 解冻主干网络，全网络训练")
+                print("  - 显存占用较大")
+                print("  - 适合：追求最佳性能")
                 
-                fit_one_epoch_fusion(model_train, model, ema, yolo_loss, loss_history, eval_callback,
-                                     optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val,
-                                     UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, 0, max_batches=max_batches)
+                batch_size = Unfreeze_batch_size
                 
-                if args.quick_test:
-                    break
+                # 学习率调整
+                nbs = 64
+                lr_limit_max = 1e-3 if optimizer_type == 'adam' else 5e-2
+                lr_limit_min = 3e-4 if optimizer_type == 'adam' else 5e-4
+                Init_lr_fit = min(max(batch_size / nbs * Init_lr, lr_limit_min), lr_limit_max)
+                Min_lr_fit = min(max(batch_size / nbs * Min_lr, lr_limit_min * 1e-2), lr_limit_max * 1e-2)
                 
-                # 保存冻结训练检查点（防止崩溃）
-                if (epoch + 1) % 10 == 0 and local_rank == 0:
-                    checkpoint = {
-                        'epoch': epoch + 1,
-                        'model': model_train.state_dict(),
-                        'ema': ema.ema.state_dict() if ema else None,
-                        'optimizer': optimizer.state_dict(),
-                        'loss': loss_history.losses[-1] if loss_history else 0
-                    }
-                    torch.save(checkpoint, os.path.join(save_dir, f'freeze_epoch_{epoch+1}_weights.pth'))
-    
-    # === 解冻训练阶段 ===
-    
-    if not args.eval_only:
-        if args.freeze_training:
-            print("\n" + "="*80)
-            print("仅进行冻结训练，跳过解冻训练阶段")
-            print("="*80)
-        elif args.quick_test:
-            print("\n" + "="*80)
-            print("快速验证完成")
-            print("="*80)
-        else:
-            print("\n" + "="*80)
-            print("第二阶段：解冻训练 (%d-%d epoch)" % (Freezed_Epoch, UnFreeze_Epoch))
-            print("="*80)
-            print("  - 解冻主干网络，全网络训练")
-            print("  - 显存占用较大")
-            print("  - 适合：追求最佳性能")
-            
-            # 尝试加载冻结训练检查点（如果存在）
-            checkpoint_path = os.path.join(save_dir, 'freeze_last_epoch_weights.pth')
-            if os.path.exists(checkpoint_path):
-                print(f"✓ 发现检查点，加载冻结训练权重: {checkpoint_path}")
-                try:
-                    checkpoint = torch.load(checkpoint_path, map_location='cpu')
-                    model_train.load_state_dict(checkpoint['model'])
-                    if ema:
-                        ema.ema.load_state_dict(checkpoint['ema'])
-                    print(f"✓ 检查点加载成功，继续训练")
-                except Exception as e:
-                    print(f"⚠️ 检查点加载失败: {e}")
-            
-            # 解冻所有层
-            for param in model.parameters():
-                param.requires_grad = True
-            
-            # 定义优化器
-            optimizer = {
-                'adam'  : optim.Adam(model_train.parameters(), Init_lr, betas=(momentum, 0.999), weight_decay=weight_decay),
-                'sgd'   : optim.SGD(model_train.parameters(), Init_lr, momentum=momentum, nesterov=True, weight_decay=weight_decay)
-            }[optimizer_type]
-            
-            # 重新创建 scaler（解冻阶段不需要加载之前的状态）
-            scaler = torch.cuda.amp.GradScaler(enabled=fp16)
-            
-            # 学习率调整
-            lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr, Min_lr, UnFreeze_Epoch)
-            
-            batch_size = Unfreeze_batch_size
-            
-            # 开始训练
-            for epoch in range(Freezed_Epoch, UnFreeze_Epoch):
-                gen.dataset.mosaic = True
-                set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
+                lr_scheduler_func = get_lr_scheduler(lr_decay_type, Init_lr_fit, Min_lr_fit, UnFreeze_Epoch)
                 
-                fit_one_epoch_fusion(model_train, model, ema, yolo_loss, loss_history, eval_callback,
-                                     optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val,
-                                     UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, 0, max_batches=max_batches)
+                # 解冻主干网络
+                for param in model.backbone_rgb.parameters():
+                    param.requires_grad = True
+                for param in model.backbone_event.parameters():
+                    param.requires_grad = True
+                for param in model.compression_convs.parameters():
+                    param.requires_grad = True
                 
-                if args.quick_test:
-                    break
+                # 重新创建优化器
+                optimizer = {
+                    'adam'  : optim.Adam(model_train.parameters(), Init_lr_fit, betas=(momentum, 0.999), weight_decay=weight_decay),
+                    'sgd'   : optim.SGD(model_train.parameters(), Init_lr_fit, momentum=momentum, nesterov=True, weight_decay=weight_decay)
+                }[optimizer_type]
                 
-                # 保存解冻训练检查点（每10个epoch）
-                if (epoch + 1) % 10 == 0 and local_rank == 0:
-                    checkpoint = {
-                        'epoch': epoch + 1,
-                        'model': model_train.state_dict(),
-                        'ema': ema.ema.state_dict() if ema else None,
-                        'optimizer': optimizer.state_dict(),
-                        'loss': loss_history.losses[-1] if loss_history else 0
-                    }
-                    torch.save(checkpoint, os.path.join(save_dir, f'unfreeze_epoch_{epoch+1}_weights.pth'))
+                # 重新创建 scaler 以适应新的 optimizer
+                scaler = torch.amp.GradScaler('cuda', enabled=fp16)
+                
+                # 重新计算 epoch_step
+                epoch_step = max(num_train // batch_size, 1)
+                epoch_step_val = max(num_val // batch_size, 1)
+                
+                print(f"解冻训练：数据集大小 train={num_train}, val={num_val}, batch_size={batch_size}")
+                print(f"解冻训练：epoch_step={epoch_step}, epoch_step_val={epoch_step_val}")
+                
+                if ema:
+                    ema.updates = epoch_step * epoch
+                
+                # 重新创建数据加载器
+                gen = DataLoader(
+                    fusion_train_set, shuffle=True, batch_size=batch_size, 
+                    num_workers=num_workers, pin_memory=True,
+                    drop_last=True, collate_fn=fusion_dataset_collate,
+                    persistent_workers=persistent_workers, prefetch_factor=prefetch_factor
+                )
+                
+                gen_val = DataLoader(
+                    fusion_val_set, shuffle=True, batch_size=batch_size, 
+                    num_workers=num_workers, pin_memory=True,
+                    drop_last=True, collate_fn=fusion_dataset_collate,
+                    persistent_workers=persistent_workers, prefetch_factor=prefetch_factor
+                )
+                
+                print(f"解冻训练数据加载器已重新创建，batch_size={batch_size}, epoch_step={epoch_step}")
+                
+                UnFreeze_flag = True
+            
+            # 冻结训练阶段
+            elif epoch < Freezed_Epoch and Freeze_Train and not args.freeze_training and not args.quick_test:
+                if epoch == Init_Epoch:
+                    print("\n" + "="*80)
+                    print("第一阶段：冻结训练 (0-%d epoch)" % Freezed_Epoch)
+                    print("="*80)
+                    print("  - 冻结主干网络，只训练检测头")
+                    print("  - 显存占用较小")
+                    print("  - 适合：显存不足、快速收敛")
+                    
+                    # 冻结主干网络
+                    for param in model.backbone_rgb.parameters():
+                        param.requires_grad = False
+                    for param in model.backbone_event.parameters():
+                        param.requires_grad = False
+                    for param in model.compression_convs.parameters():
+                        param.requires_grad = False
+                    
+                    # 优化器优化所有未冻结的参数
+                    optimizer = optim.SGD(filter(lambda p: p.requires_grad, model_train.parameters()), 
+                                         Init_lr, momentum=momentum, weight_decay=weight_decay)
+                    
+                    # 重新创建 scaler 以适应新的 optimizer
+                    scaler = torch.amp.GradScaler('cuda', enabled=fp16)
+            
+            # 设置数据集的当前 epoch
+            gen.dataset.epoch_now = epoch
+            gen_val.dataset.epoch_now = epoch
+            
+            # 设置学习率
+            set_optimizer_lr(optimizer, lr_scheduler_func, epoch)
+            
+            # 训练一个 epoch
+            fit_one_epoch_fusion(model_train, model, ema, yolo_loss, loss_history, eval_callback,
+                                 optimizer, epoch, epoch_step, epoch_step_val, gen, gen_val,
+                                 UnFreeze_Epoch, Cuda, fp16, scaler, save_period, save_dir, 0, max_batches=max_batches)
+            
+            if args.quick_test:
+                break
     
     # === 仅评估模式 ===
     
