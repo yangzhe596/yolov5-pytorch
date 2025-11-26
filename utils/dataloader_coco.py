@@ -19,7 +19,7 @@ class CocoYoloDataset(Dataset):
     """COCO格式的YOLO数据集加载器"""
     
     def __init__(self, coco_json_path, image_dir, input_shape, num_classes, anchors, anchors_mask, 
-                 epoch_length, mosaic, mixup, mosaic_prob, mixup_prob, train, special_aug_ratio=0.7):
+                 epoch_length, mosaic, mixup, mosaic_prob, mixup_prob, train, special_aug_ratio=0.7, high_res=False, four_features=False):
         super(CocoYoloDataset, self).__init__()
         
         self.coco_json_path = coco_json_path
@@ -35,10 +35,24 @@ class CocoYoloDataset(Dataset):
         self.mixup_prob = mixup_prob
         self.train = train
         self.special_aug_ratio = special_aug_ratio
+        self.high_res = high_res  # 是否启用高分辨率模式
+        self.four_features = four_features  # 是否启用四特征层模式
         
         self.epoch_now = -1
         self.bbox_attrs = 5 + num_classes
         self.threshold = 4
+        
+        # 根据高分辨率模式设置步长
+        if high_res:
+            if len(anchors_mask) == 4:
+                # 四特征层高分辨率模式：20x20, 40x40, 80x80, 160x160特征层（按照模型输出顺序）
+                self.strides = {0: 32, 1: 16, 2: 8, 3: 4}  # 对应20x20, 40x40, 80x80, 160x160
+            else:
+                # 三特征层高分辨率模式：40x40, 80x80, 160x160特征层（按照模型输出顺序）
+                self.strides = {0: 16, 1: 8, 2: 4}  # 对应40x40, 80x80, 160x160
+        else:
+            # 标准模式：40x40, 80x80, 20x20特征层（按照模型输出顺序）
+            self.strides = {0: 32, 1: 16, 2: 8}  # 对应40x40, 80x80, 20x20
         
         # 加载COCO标注
         self._load_coco_annotations()
@@ -70,9 +84,15 @@ class CocoYoloDataset(Dataset):
         self.image_infos = []
         for img in coco_data['images']:
             if img['id'] in img_to_anns:
+                # 支持 Fusion 数据集的文件名字段
+                # 优先使用 file_name，如果没有则使用 rgb_file_name 或 event_file_name
+                file_name = img.get('file_name') or img.get('rgb_file_name') or img.get('event_file_name')
+                if not file_name:
+                    continue
+                
                 # 支持相对路径格式（如 "序列0/PADDED_RGB/xxx.jpg"）
                 # image_dir 应该是 FRED 数据集的根目录
-                img_path = os.path.join(self.image_dir, img['file_name'])
+                img_path = os.path.join(self.image_dir, file_name)
                 
                 # 转换COCO bbox为VOC格式 [xmin, ymin, xmax, ymax, class_id]
                 boxes = []
@@ -137,7 +157,12 @@ class CocoYoloDataset(Dataset):
         """使用cv2加载图像（比PIL快）"""
         image = cv2.imread(image_path)
         if image is None:
-            raise ValueError(f"无法读取图像: {image_path}")
+            # 如果图片不存在，创建一个随机噪声图片作为替代
+            # 这样可以让训练继续进行，而不是因为缺失图片而中断
+            print(f"警告: 图片不存在，使用随机噪声图片替代: {image_path}")
+            # 创建一个随机噪声图片，大小与输入尺寸匹配，RGB格式
+            # 使用self.input_shape[1]作为宽度，self.input_shape[0]作为高度
+            image = np.random.randint(0, 255, (self.input_shape[0], self.input_shape[1], 3), dtype=np.uint8)
         # cv2读取的是BGR格式，需要转换为RGB
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         return image
@@ -412,7 +437,8 @@ class CocoYoloDataset(Dataset):
         """生成训练目标"""
         num_layers = len(self.anchors_mask)
         input_shape = np.array(self.input_shape, dtype='int32')
-        grid_shapes = [input_shape // {0:32, 1:16, 2:8}[l] for l in range(num_layers)]
+        # 使用动态步长
+        grid_shapes = [input_shape // self.strides[l] for l in range(num_layers)]
         # 注意：y_true的shape应该是 [num_anchors, grid_h, grid_w, bbox_attrs]
         y_true = [np.zeros((len(self.anchors_mask[l]), grid_shapes[l][0], grid_shapes[l][1], self.bbox_attrs), dtype='float32') for l in range(num_layers)]
         box_best_ratio = [np.zeros((len(self.anchors_mask[l]), grid_shapes[l][0], grid_shapes[l][1]), dtype='float32') for l in range(num_layers)]
@@ -422,7 +448,7 @@ class CocoYoloDataset(Dataset):
         
         for l in range(num_layers):
             in_h, in_w = grid_shapes[l]
-            anchors = np.array(self.anchors) / {0:32, 1:16, 2:8}[l]
+            anchors = np.array(self.anchors) / self.strides[l]
             
             # 计算真实框在特征图上的位置
             batch_target = np.zeros_like(targets)

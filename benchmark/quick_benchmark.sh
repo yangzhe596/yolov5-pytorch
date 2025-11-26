@@ -1,7 +1,7 @@
 #!/bin/bash
 # 快速基准测试脚本
 
-PYTHON=/home/yz/miniforge3/envs/torch/bin/python3
+PYTHON=/home/yz/.conda/envs/torch/bin/python3
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 

@@ -23,7 +23,8 @@ import config_fred as cfg
 
 def evaluate_model(model_path, modality='rgb', 
                    confidence=None, nms_iou=None, input_shape=None,
-                   map_out_path='map_out', MINOVERLAP=None):
+                   map_out_path='map_out', MINOVERLAP=None,
+                   high_res=False, four_features=False):
     """
     评估已训练的模型
     
@@ -35,6 +36,8 @@ def evaluate_model(model_path, modality='rgb',
         input_shape: 输入尺寸（None则使用配置文件）
         map_out_path: mAP计算输出目录
         MINOVERLAP: mAP计算的IOU阈值（None则使用配置文件）
+        high_res: 是否使用高分辨率模式
+        four_features: 是否使用四特征层模式（需要high_res=True）
     """
     
     # 从配置文件加载参数（如果未指定）
@@ -83,7 +86,8 @@ def evaluate_model(model_path, modality='rgb',
     # 创建模型
     print("\n加载模型...")
     model = YoloBody(anchors_mask, num_classes, phi, backbone, 
-                     pretrained=False, input_shape=input_shape)
+                     pretrained=False, input_shape=input_shape,
+                     high_res=high_res, four_features=four_features)
     
     # 加载权重
     if not os.path.exists(model_path):
@@ -117,7 +121,8 @@ def evaluate_model(model_path, modality='rgb',
     
     # 创建解码器
     bbox_util = DecodeBox(anchors, num_classes, 
-                         (input_shape[0], input_shape[1]), anchors_mask)
+                         (input_shape[0], input_shape[1]), anchors_mask, 
+                         high_res=high_res, four_features=four_features)
     
     # 加载COCO测试集
     print("\n加载测试集...")
@@ -226,16 +231,18 @@ def evaluate_model(model_path, modality='rgb',
     
     # 计算mAP
     print("\n计算mAP...")
+    # 首先检查pycocotools是否可用
     try:
-        # 尝试使用COCO API
         from pycocotools.coco import COCO
+        from pycocotools.cocoeval import COCOeval
+        # 如果导入成功，尝试使用COCO API
         temp_map = get_coco_map(class_names=class_names, path=map_out_path)[1]
         print(f"\n{'='*70}")
         print(f"mAP@{MINOVERLAP} (COCO): {temp_map:.4f}")
         print(f"{'='*70}")
-    except Exception as e:
+    except (ImportError, NameError, Exception) as e:
         # 使用VOC方式计算
-        print(f"使用VOC方式计算mAP (COCO API不可用)")
+        print(f"使用VOC方式计算mAP (COCO API不可用: {str(e)})")
         temp_map = get_map(MINOVERLAP, False, path=map_out_path)
         print(f"\n{'='*70}")
         print(f"mAP@{MINOVERLAP} (VOC): {temp_map:.4f}")
@@ -270,8 +277,24 @@ if __name__ == "__main__":
                         help='mAP计算输出目录')
     parser.add_argument('--minoverlap', type=float, default=None,
                         help=f'mAP计算的IOU阈值（默认: {cfg.MINOVERLAP}）')
+    parser.add_argument('--high_res', action='store_true',
+                        help='使用高分辨率模式模型')
+    parser.add_argument('--four_features', action='store_true',
+                        help='使用四特征层模式模型（需要同时指定--high_res）')
     
     args = parser.parse_args()
+    
+    # 配置高分辨率模式
+    if args.high_res:
+        cfg.configure_high_res_mode(True, args.four_features)
+        print(f"\n{'='*70}")
+        if args.four_features:
+            print("🔍 四特征层高分辨率模式已启用")
+            print("  - 特征层: 160x160, 80x80, 40x40, 20x20")
+        else:
+            print("🔍 高分辨率模式已启用")
+            print("  - 特征层: 160x160, 80x80, 40x40")
+        print(f"{'='*70}\n")
     
     # 如果未指定模型路径，使用配置文件中的最佳权重
     if not args.model_path:
@@ -281,7 +304,12 @@ if __name__ == "__main__":
     if not os.path.exists(args.model_path):
         print(f"错误: 模型文件不存在 {args.model_path}")
         print(f"\n请先训练模型:")
-        print(f"  python train_fred.py --modality {args.modality}")
+        if args.four_features:
+            print(f"  python train_fred.py --modality {args.modality} --high_res --four_features")
+        elif args.high_res:
+            print(f"  python train_fred.py --modality {args.modality} --high_res")
+        else:
+            print(f"  python train_fred.py --modality {args.modality}")
         exit(1)
     
     # 转换input_shape为tuple
@@ -294,5 +322,7 @@ if __name__ == "__main__":
         nms_iou=args.nms_iou,
         input_shape=input_shape,
         map_out_path=args.map_out_path,
-        MINOVERLAP=args.minoverlap
+        MINOVERLAP=args.minoverlap,
+        high_res=args.high_res,
+        four_features=args.four_features
     )

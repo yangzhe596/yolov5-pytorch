@@ -17,7 +17,7 @@ import os
 # ============================================================================
 
 # FRED 数据集根目录（可通过环境变量覆盖）
-FRED_ROOT = os.environ.get('FRED_ROOT', '/home/yz/datasets/fred')
+FRED_ROOT = os.environ.get('FRED_ROOT', '/mnt/data/datasets/fred')
 
 # COCO 格式数据集根目录
 COCO_ROOT = 'datasets/fred_coco'
@@ -72,6 +72,20 @@ def get_coco_modality_root(modality='rgb'):
     """
     return os.path.join(COCO_ROOT, modality)
 
+def get_fusion_annotation_path(split='train'):
+    """
+    获取 Fusion 数据集标注文件路径
+    
+    Args:
+        split: 'train', 'val', 或 'test'
+    
+    Returns:
+        Fusion 标注文件的完整路径
+    """
+    # Fusion 数据集存储在单独的目录中
+    fusion_dir = 'datasets/fred_fusion'
+    return os.path.join(fusion_dir, 'annotations', f'instances_{split}.json')
+
 # ============================================================================
 # 数据集配置
 # ============================================================================
@@ -100,6 +114,51 @@ PRETRAINED = True
 ANCHORS_PATH = 'model_data/yolo_anchors.txt'
 ANCHORS_MASK = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
 
+# 高分辨率模式配置
+HIGH_RES = False  # 是否启用高分辨率模式（160x160, 80x80, 40x40）
+
+def configure_high_res_mode(enable_high_res=False, four_features=False):
+    """
+    配置高分辨率模式
+    
+    Args:
+        enable_high_res: 是否启用高分辨率模式
+        four_features: 是否使用四个特征层（P2, P3, P4, P5）
+    
+    Returns:
+        配置后的anchors_path和anchors_mask
+    """
+    global HIGH_RES, ANCHORS_PATH, ANCHORS_MASK
+    
+    HIGH_RES = enable_high_res
+    
+    if HIGH_RES:
+        if four_features:
+            ANCHORS_PATH = 'model_data/yolo_anchors_four_feat.txt'
+            # 四特征层的锚点掩码
+            # 160x160使用新增最小锚点[5,6],[8,10],[12,15]
+            # 80x80使用原第三组锚点[10,13],[16,30],[33,23]
+            # 40x40使用原第二组锚点[30,61],[62,45],[59,119]
+            # 20x20使用原第一组锚点[116,90],[156,198],[373,326]
+            ANCHORS_MASK = [[0, 1, 2], [3, 4, 5], [6, 7, 8], [9, 10, 11]]
+        else:
+            # 原来的三特征层高分辨率模式（保留兼容性）
+            ANCHORS_PATH = 'model_data/yolo_anchors_high_res.txt'
+            ANCHORS_MASK = [[0, 1, 2], [3, 4, 5], [6, 7, 8]]
+        
+        # 高分辨率模式下建议使用较小的输入尺寸以提高小目标检测能力
+        if INPUT_SHAPE[0] > 640:
+            print("警告: 高分辨率模式下建议使用较小的输入尺寸(<=640)以提高小目标检测能力")
+    else:
+        ANCHORS_PATH = 'model_data/yolo_anchors.txt'
+        # 标准YOLOv5的锚点掩码
+        ANCHORS_MASK = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+    
+    return ANCHORS_PATH, ANCHORS_MASK
+
+# 初始化配置（默认不启用高分辨率模式）
+configure_high_res_mode(HIGH_RES)
+
 # ============================================================================
 # 训练配置
 # ============================================================================
@@ -115,12 +174,12 @@ SEED = 11
 
 # 训练轮次
 INIT_EPOCH = 0
-FREEZE_EPOCH = 15
-UNFREEZE_EPOCH = 50
+FREEZE_EPOCH = 50
+UNFREEZE_EPOCH = 300
 
 # Batch Size
 FREEZE_BATCH_SIZE = 16
-UNFREEZE_BATCH_SIZE = 8  # FRED数据集目标较小，使用较小的batch
+UNFREEZE_BATCH_SIZE = 16  # FRED数据集目标较小，使用较小的batch
 
 # 是否冻结训练
 FREEZE_TRAIN = True
@@ -133,8 +192,8 @@ FREEZE_TRAIN = True
 OPTIMIZER_TYPE = 'sgd'
 
 # 学习率
-INIT_LR = 5e-3
-MIN_LR = INIT_LR * 0.01
+INIT_LR = 2e-2
+MIN_LR = INIT_LR * 0.001
 
 # SGD参数
 MOMENTUM = 0.937
@@ -148,11 +207,11 @@ LR_DECAY_TYPE = 'cos'
 # ============================================================================
 
 # Mosaic数据增强
-MOSAIC = True
+MOSAIC = False
 MOSAIC_PROB = 0.5
 
 # MixUp数据增强
-MIXUP = True
+MIXUP = False
 MIXUP_PROB = 0.5
 
 # 特殊数据增强比例（前70%的epoch使用强数据增强）
@@ -173,11 +232,11 @@ SAVE_DIR_PREFIX = 'logs/fred'
 
 # 评估配置
 EVAL_FLAG = True
-EVAL_PERIOD = 5  # 调整评估周期：15 -> 5，适配50轮训练
+EVAL_PERIOD = 1  # 调整评估周期：15 -> 5，适配50轮训练
 
 # 数据加载（针对多核CPU优化）
 NUM_WORKERS = 8              # CPU核心数的一半，避免过度占用
-PREFETCH_FACTOR = 4          # 每个worker预取4个batch，加速数据流
+PREFETCH_FACTOR = 8          # 每个worker预取4个batch，加速数据流
 PERSISTENT_WORKERS = True    # 保持workers存活，避免epoch间重复创建进程
 
 # ============================================================================
@@ -212,7 +271,7 @@ def get_model_path(modality='rgb', best=True):
     获取模型权重路径
     
     Args:
-        modality: 'rgb' 或 'event'
+        modality: 'rgb', 'event', 或 'fusion'
         best: True返回best权重路径，False返回final权重路径
     
     Returns:
@@ -248,6 +307,24 @@ def validate_config():
     if not os.path.exists(ANCHORS_PATH):
         errors.append(f"先验框文件不存在: {ANCHORS_PATH}")
     
+    # 高分辨率模式特定检查
+    if HIGH_RES:
+        print("高分辨率模式已启用:")
+        print(f"  - 使用高分辨率先验框: {ANCHORS_PATH}")
+        print(f"  - 锚点掩码: {ANCHORS_MASK}")
+        print(f"  - 特征层: 160x160, 80x80, 40x40")
+        print(f"  - 输入尺寸: {INPUT_SHAPE}")
+        
+        # 对于小目标检测，建议使用较小的输入尺寸
+        if INPUT_SHAPE[0] > 640:
+            errors.append(f"高分辨率模式下建议使用较小的输入尺寸(<=640)，当前为: {INPUT_SHAPE}")
+    else:
+        print("标准分辨率模式已启用:")
+        print(f"  - 使用标准先验框: {ANCHORS_PATH}")
+        print(f"  - 锚点掩码: {ANCHORS_MASK}")
+        print(f"  - 特征层: 80x80, 40x40, 20x20")
+        print(f"  - 输入尺寸: {INPUT_SHAPE}")
+    
     return errors
 
 # ============================================================================
@@ -267,17 +344,29 @@ def validate_config():
    # 序列级别划分
    python convert_fred_to_coco_v2.py --split-mode sequence --modality both
 
-3. 训练RGB模态：
+3. 训练单模态：
+   # 训练RGB模态
    python train_fred.py --modality rgb
-
-4. 训练Event模态：
+   
+   # 训练Event模态
    python train_fred.py --modality event
+
+4. 训练融合模型：
+   # 转换融合数据集（确保已运行）
+   python convert_fred_to_fusion.py
+   
+   # 训练融合模型
+   python train_fred_fusion.py --modality dual
+   
+   # 自定义压缩比率
+   python train_fred_fusion.py --modality dual --compression_ratio 0.5
 
 5. 自定义配置：
    直接修改本文件中的配置参数
 
 6. 断点续练：
    python train_fred.py --modality rgb --resume
+   python train_fred_fusion.py --resume
 
 配置优先级：
 1. 命令行参数（最高优先级）
@@ -306,10 +395,13 @@ if __name__ == '__main__':
     print(f"Event 图像目录: {get_image_dir('event')}")
     print(f"RGB 训练集标注: {get_annotation_path('rgb', 'train')}")
     print(f"Event 测试集标注: {get_annotation_path('event', 'test')}")
+    print(f"Fusion 训练集标注: {get_fusion_annotation_path('train')}")
     print(f"RGB 保存目录: {get_save_dir('rgb')}")
     print(f"Event 保存目录: {get_save_dir('event')}")
+    print(f"Fusion 保存目录: {get_save_dir('fusion')}")
     print(f"RGB 最佳模型: {get_model_path('rgb', best=True)}")
     print(f"Event 最终模型: {get_model_path('event', best=False)}")
+    print(f"Fusion 最佳模型: {get_model_path('fusion', best=True)}")
     
     # 验证配置
     print("\n" + "=" * 70)

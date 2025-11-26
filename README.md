@@ -234,6 +234,78 @@ python convert_fred_to_coco_v2.py --modality event
 python test_conversion_v2.py
 ```
 
+### RGB-Event 融合数据集
+
+本项目支持生成RGB和Event模态的融合数据集，通过时间戳紧配对策略实现高精度融合。
+
+#### 融合数据集生成
+
+```bash
+# 生成融合训练集
+python convert_fred_to_fusion.py --split train --time-tolerance 0.05 --vis-samples 10
+
+# 生成融合验证集
+python convert_fred_to_fusion.py \
+  --rgb-annotation datasets/fred_coco/rgb/annotations/instances_val.json \
+  --event-annotation datasets/fred_coco/event/annotations/instances_val.json \
+  --split val --time-tolerance 0.05 --vis-samples 5
+
+# 生成融合测试集
+python convert_fred_to_fusion.py \
+  --rgb-annotation datasets/fred_coco/rgb/annotations/instances_test.json \
+  --event-annotation datasets/fred_coco/event/annotations/instances_test.json \
+  --split test --time-tolerance 0.05 --vis-samples 5
+```
+
+#### 参数说明
+
+- `--rgb-annotation`: RGB模态COCO标注文件路径
+- `--event-annotation`: Event模态COCO标注文件路径
+- `--output-dir`: 输出目录（默认：datasets/fred_fusion）
+- `--time-tolerance`: 时间戳配对容差，单位秒（默认：0.05s，即50ms）
+- `--fred-root`: FRED数据集根目录（默认：/home/yz/datasets/fred）
+- `--split`: 数据集划分名称（train/val/test）
+- `--vis-samples`: 可视化样本数量
+
+#### 融合数据集结构
+
+```
+datasets/fred_fusion/
+├── annotations/             # COCO格式标注文件
+│   ├── instances_train.json # 训练集融合标注
+│   ├── instances_val.json   # 验证集融合标注
+│   └── instances_test.json  # 测试集融合标注
+├── visualization/           # 可视化结果
+│   ├── fusion_pair_*.png    # 配对样本可视化
+│   └── statistics.png       # 统计信息图表
+├── *_statistics.json        # 各数据集统计信息
+└── fusion_report.md         # 详细报告
+```
+
+#### 融合数据集特点
+
+- **高匹配率**: 99.96%的时间戳匹配成功率
+- **双模态信息**: 每个样本包含RGB和Event两种模态的文件路径
+- **时间对齐**: 精确的时间戳匹配和时间差信息
+- **标准格式**: 兼容COCO格式的标注文件
+- **可视化支持**: 提供配对样本和统计信息的可视化
+
+#### 融合数据集统计
+
+| 数据集 | RGB帧数 | Event帧数 | 匹配对数 | 匹配率 |
+|--------|---------|-----------|----------|--------|
+| 训练集 | 96,271 | 99,970 | 96,229 | 99.96% |
+| 验证集 | 27,495 | 28,571 | 27,475 | 99.93% |
+| 测试集 | 13,779 | 14,365 | 13,764 | 99.89% |
+
+#### 使用说明
+
+1. **环境准备**: 确保已安装必要的依赖包（torch, cv2, matplotlib等）
+2. **数据路径**: 确认FRED数据集路径正确
+3. **时间容差**: 可根据需求调整时间戳配对容差
+4. **可视化**: 生成的可视化结果可用于验证配对质量
+5. **后续使用**: 融合数据集可用于多模态模型训练
+
 ---
 
 ## 数据集验证
@@ -954,5 +1026,5 @@ bash scripts/visualize_images.sh
 
 **最后更新**: 2025-11-01  
 **项目路径**: `/mnt/data/code/yolov5-pytorch`  
-**Python 环境**: `/home/yz/miniforge3/envs/torch/bin/python3`  
+**Python 环境**: `/home/yz/.conda/envs/torch/bin/python3`  
 **系统配置**: RTX 3090 / CUDA 12.4 / PyTorch 2.4.1

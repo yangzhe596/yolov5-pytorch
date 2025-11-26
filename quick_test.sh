@@ -13,7 +13,7 @@
 MODALITY=${1:-rgb}
 
 # Python 路径
-PYTHON="/home/yz/miniforge3/envs/torch/bin/python3"
+PYTHON="/home/yz/.conda/envs/torch/bin/python3"
 
 # 颜色输出
 GREEN='\033[0;32m'

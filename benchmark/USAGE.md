@@ -7,7 +7,7 @@
 测试 RGB 模态，50 个批次：
 
 ```bash
-/home/yz/miniforge3/envs/torch/bin/python3 benchmark/training_benchmark.py \
+/home/yz/.conda/envs/torch/bin/python3 benchmark/training_benchmark.py \
     --modality rgb \
     --num_batches 50
 ```

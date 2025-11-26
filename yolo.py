@@ -68,6 +68,14 @@ class YOLO(object):
         #   没有GPU可以设置成False
         #-------------------------------#
         "cuda"              : True,
+        #-------------------------------#
+        #   是否使用高分辨率模式（160x160, 80x80, 40x40）
+        #-------------------------------#
+        "high_res"          : False,
+        #-------------------------------#
+        #   是否使用四特征层模式（P2, P3, P4, P5），需要high_res=True
+        #-------------------------------#
+        "four_features"     : False,
     }
 
     @classmethod
@@ -91,7 +99,7 @@ class YOLO(object):
         #---------------------------------------------------#
         self.class_names, self.num_classes  = get_classes(self.classes_path)
         self.anchors, self.num_anchors      = get_anchors(self.anchors_path)
-        self.bbox_util                      = DecodeBox(self.anchors, self.num_classes, (self.input_shape[0], self.input_shape[1]), self.anchors_mask)
+        self.bbox_util                      = DecodeBox(self.anchors, self.num_classes, (self.input_shape[0], self.input_shape[1]), self.anchors_mask, high_res=self.high_res, four_features=self.four_features)
 
         #---------------------------------------------------#
         #   画框设置不同的颜色
@@ -110,7 +118,7 @@ class YOLO(object):
         #---------------------------------------------------#
         #   建立yolo模型，载入yolo模型的权重
         #---------------------------------------------------#
-        self.net    = YoloBody(self.anchors_mask, self.num_classes, self.phi, backbone = self.backbone, input_shape = self.input_shape)
+        self.net    = YoloBody(self.anchors_mask, self.num_classes, self.phi, backbone = self.backbone, input_shape = self.input_shape, high_res=self.high_res, four_features=self.four_features)
         device      = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.net.load_state_dict(torch.load(self.model_path, map_location=device))
         self.net    = self.net.eval()

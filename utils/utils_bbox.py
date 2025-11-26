@@ -4,28 +4,35 @@ from torchvision.ops import nms
 
 
 class DecodeBox():
-    def __init__(self, anchors, num_classes, input_shape, anchors_mask = [[6,7,8], [3,4,5], [0,1,2]]):
+    def __init__(self, anchors, num_classes, input_shape, anchors_mask = [[6,7,8], [3,4,5], [0,1,2]], high_res=False, four_features=False):
         super(DecodeBox, self).__init__()
         self.anchors        = anchors
         self.num_classes    = num_classes
         self.bbox_attrs     = 5 + num_classes
         self.input_shape    = input_shape
         #-----------------------------------------------------------#
-        #   20x20的特征层对应的anchor是[116,90],[156,198],[373,326]
-        #   40x40的特征层对应的anchor是[30,61],[62,45],[59,119]
-        #   80x80的特征层对应的anchor是[10,13],[16,30],[33,23]
+        #   高分辨率模式下的特征层和锚点：
+        #   40x40的特征层对应的anchor是[30,61],[62,45],[59,119] (原第二层)
+        #   80x80的特征层对应的anchor是[10,13],[16,30],[33,23] (原第三层)
+        #   160x160的特征层对应的anchor是[5,6],[8,10],[12,15] (新增微小锚点)
+        #
+        #   四特征层模式下增加：
+        #   20x20的特征层对应的anchor是[116,90],[156,198],[373,326] (原第一层)
         #-----------------------------------------------------------#
         self.anchors_mask   = anchors_mask
+        self.high_res       = high_res
+        self.four_features  = four_features
 
     def decode_box(self, inputs):
         outputs = []
         for i, input in enumerate(inputs):
             #-----------------------------------------------#
-            #   输入的input一共有三个，他们的shape分别是
+            #   输入的input一共有三个或四个，他们的shape分别是
             #   batch_size = 1
-            #   batch_size, 3 * (4 + 1 + 80), 20, 20
-            #   batch_size, 255, 40, 40
-            #   batch_size, 255, 80, 80
+            #   batch_size, 3 * (4 + 1 + 80), 20, 20 (P5层, 仅四特征层)
+            #   batch_size, 255, 40, 40 (P4层)
+            #   batch_size, 255, 80, 80 (P3层)
+            #   batch_size, 255, 160, 160 (P2层, 仅高分辨率模式)
             #-----------------------------------------------#
             batch_size      = input.size(0)
             input_height    = input.size(2)
@@ -33,7 +40,7 @@ class DecodeBox():
 
             #-----------------------------------------------#
             #   输入为640x640时
-            #   stride_h = stride_w = 32、16、8
+            #   stride_h = stride_w = 32、16、8、4 (四特征层)
             #-----------------------------------------------#
             stride_h = self.input_shape[0] / input_height
             stride_w = self.input_shape[1] / input_width
@@ -43,10 +50,11 @@ class DecodeBox():
             scaled_anchors = [(anchor_width / stride_w, anchor_height / stride_h) for anchor_width, anchor_height in self.anchors[self.anchors_mask[i]]]
 
             #-----------------------------------------------#
-            #   输入的input一共有三个，他们的shape分别是
-            #   batch_size, 3, 20, 20, 85
-            #   batch_size, 3, 40, 40, 85
-            #   batch_size, 3, 80, 80, 85
+            #   输入的input一共有三个或四个，他们的shape分别是
+            #   batch_size, 3, 20, 20, 85 (P5层, 仅四特征层)
+            #   batch_size, 3, 40, 40, 85 (P4层)
+            #   batch_size, 3, 80, 80, 85 (P3层)
+            #   batch_size, 3, 160, 160, 85 (P2层, 仅高分辨率模式)
             #-----------------------------------------------#
             prediction = input.view(batch_size, len(self.anchors_mask[i]),
                                     self.bbox_attrs, input_height, input_width).permute(0, 1, 3, 4, 2).contiguous()

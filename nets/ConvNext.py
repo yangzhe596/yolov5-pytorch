@@ -218,6 +218,15 @@ class ConvNeXt(nn.Module):
             if i != 0:
                 outs.append(x)
         return outs
+    
+    def get_p5_feature(self, x):
+        """
+        获取P5特征层 (20x20)，用于HIGH_RES模式下的四特征层检测
+        """
+        for i in range(4):
+            x = self.downsample_layers[i](x)
+            x = self.stages[i](x)
+        return x
 
 model_urls = {
     "convnext_tiny_1k"      : "https://github.com/bubbliiiing/yolov5-pytorch/releases/download/v1.0/convnext_tiny_1k_224_ema_no_jit.pth",

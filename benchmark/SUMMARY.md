@@ -51,7 +51,7 @@ benchmark/
 ### 1. 基本测试
 
 ```bash
-/home/yz/miniforge3/envs/torch/bin/python3 benchmark/training_benchmark.py \
+/home/yz/.conda/envs/torch/bin/python3 benchmark/training_benchmark.py \
     --modality rgb \
     --num_batches 50
 ```

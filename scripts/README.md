@@ -120,7 +120,7 @@ bash scripts/visualize_images.sh
 
 1. **Python 环境**: 所有脚本都需要使用正确的 Python 环境
    ```bash
-   /home/yz/miniforge3/envs/torch/bin/python3
+   /home/yz/.conda/envs/torch/bin/python3
    ```
 
 2. **工作目录**: 脚本应该从项目根目录运行

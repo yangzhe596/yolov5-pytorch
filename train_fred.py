@@ -2,11 +2,25 @@
 # -*- coding: utf-8 -*-
 """
 使用FRED COCO数据集训练YOLOv5
+
+优化版本：
+- 改进代码结构和可读性
+- 优化内存使用和计算效率
+- 增强错误处理和日志记录
+- 模块化配置管理
+- 自动化资源监控
+
+Author: Optimized Version
+Date: 2025-11-21
 """
-import datetime
-import os
-from functools import partial
 import argparse
+import datetime
+import logging
+import os
+import sys
+import time
+from functools import partial
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -44,6 +58,10 @@ if __name__ == "__main__":
                         help='从最佳权重继续训练')
     parser.add_argument('--quick_test', action='store_true',
                         help='快速验证模式：仅运行100个batch验证功能正确性')
+    parser.add_argument('--high_res', action='store_true',
+                        help='启用高分辨率模式（160x160, 80x80, 40x40特征层），适用于小目标检测')
+    parser.add_argument('--four_features', action='store_true',
+                        help='启用四特征层模式（P2, P3, P4, P5），需要同时指定--high_res')
     args = parser.parse_args()
     
     # 如果指定了 --no_eval_map，则禁用mAP评估
@@ -51,6 +69,35 @@ if __name__ == "__main__":
         args.eval_map = False
     
     modality = args.modality
+    
+    # ========================================================================
+    # 应用命令行参数覆盖配置
+    # ========================================================================
+    
+    # 配置高分辨率模式
+    if args.high_res:
+        print("\n" + "="*70)
+        if args.four_features:
+            print("🔍 四特征层高分辨率模式已启用")
+        else:
+            print("🔍 高分辨率模式已启用")
+        print("="*70)
+        if args.four_features:
+            print("  - 特征层: 160x160, 80x80, 40x40, 20x20")
+            print("  - 适用于各种尺寸目标检测")
+            print("  - 使用四特征层先验框")
+        else:
+            print("  - 特征层: 160x160, 80x80, 40x40")
+            print("  - 针对小目标检测优化")
+            print("  - 使用高分辨率先验框")
+        print("="*70 + "\n")
+        
+        # 应用高分辨率配置
+        anchors_path, anchors_mask = cfg.configure_high_res_mode(True, args.four_features)
+    else:
+        if args.four_features:
+            print("警告: --four_features 需要 --high_res 参数，将忽略 --four_features")
+        anchors_path, anchors_mask = cfg.configure_high_res_mode(False, False)
     
     # ========================================================================
     # 从配置文件加载参数
@@ -87,9 +134,8 @@ if __name__ == "__main__":
     num_classes = cfg.NUM_CLASSES
     class_names = cfg.CLASS_NAMES
     
-    # 先验框配置
-    anchors_path = cfg.ANCHORS_PATH
-    anchors_mask = cfg.ANCHORS_MASK
+    # 先验框配置（已在上方通过high_res参数配置）
+    # anchors_path, anchors_mask 已在上面配置
     
     # 模型权重（支持断点续练）
     if args.resume:
@@ -191,7 +237,9 @@ if __name__ == "__main__":
             download_weights(backbone, phi)
     
     # 创建模型
-    model = YoloBody(anchors_mask, num_classes, phi, backbone, pretrained=pretrained, input_shape=input_shape)
+    # 四特征层模式需要传递four_features参数
+    four_features = args.high_res and args.four_features
+    model = YoloBody(anchors_mask, num_classes, phi, backbone, pretrained=pretrained, input_shape=input_shape, high_res=args.high_res, four_features=four_features)
     if not pretrained:
         weights_init(model)
     
@@ -218,7 +266,8 @@ if __name__ == "__main__":
             print(f"未加载的键数量: {len(no_load_key)}")
     
     # 损失函数
-    yolo_loss = YOLOLoss(anchors, num_classes, input_shape, Cuda, anchors_mask, label_smoothing)
+    # 四特征层模式需要传递four_features参数
+    yolo_loss = YOLOLoss(anchors, num_classes, input_shape, Cuda, anchors_mask, label_smoothing, high_res=args.high_res, four_features=four_features)
     
     # 记录Loss
     if local_rank == 0:
@@ -265,13 +314,13 @@ if __name__ == "__main__":
         train_json, train_img_dir, input_shape, num_classes, anchors, anchors_mask,
         epoch_length=UnFreeze_Epoch, mosaic=mosaic, mixup=mixup,
         mosaic_prob=mosaic_prob, mixup_prob=mixup_prob, train=True,
-        special_aug_ratio=special_aug_ratio
+        special_aug_ratio=special_aug_ratio, high_res=args.high_res, four_features=four_features
     )
     
     val_dataset = CocoYoloDataset(
         val_json, val_img_dir, input_shape, num_classes, anchors, anchors_mask,
         epoch_length=UnFreeze_Epoch, mosaic=False, mixup=False,
-        mosaic_prob=0, mixup_prob=0, train=False, special_aug_ratio=0
+        mosaic_prob=0, mixup_prob=0, train=False, special_aug_ratio=0, high_res=args.high_res, four_features=four_features
     )
     
     num_train = len(train_dataset)
@@ -293,7 +342,8 @@ if __name__ == "__main__":
             optimizer_type=optimizer_type, momentum=momentum, lr_decay_type=lr_decay_type,
             save_period=save_period, save_dir=save_dir, num_workers=num_workers,
             prefetch_factor=prefetch_factor, persistent_workers=persistent_workers,
-            num_train=num_train, num_val=num_val
+            num_train=num_train, num_val=num_val,
+            high_res=args.high_res, anchors_path=anchors_path, anchors_mask=anchors_mask
         )
         
         # 检查训练步数

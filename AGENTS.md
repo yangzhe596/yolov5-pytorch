@@ -76,7 +76,7 @@ yolov5-pytorch/
 ### 当前环境
 
 ```
-Python: /home/yz/miniforge3/envs/torch/bin/python3
+Python: /home/yz/.conda/envs/torch/bin/python3
 PyTorch: 2.4.1
 CUDA: 12.4
 GPU: NVIDIA GeForce RTX 3090
@@ -150,16 +150,16 @@ python get_map.py
 # 数据集位置: datasets/fred_coco/
 
 # 2. 训练 RGB 模态
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality rgb
 
 # 3. 训练 Event 模态
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality event
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality event
 
 # 4. 评估模型
-/home/yz/miniforge3/envs/torch/bin/python3 eval_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 eval_fred.py --modality rgb
 
 # 5. 预测测试
-/home/yz/miniforge3/envs/torch/bin/python3 predict_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 predict_fred.py --modality rgb
 ```
 
 ---
@@ -338,13 +338,13 @@ MIXUP = True
 
 ```bash
 # RGB 模态（推荐）
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality rgb
 
 # Event 模态
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality event
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality event
 
 # 快速训练（不评估 mAP）
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality rgb --no_eval_map
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality rgb --no_eval_map
 
 # 使用快捷脚本
 bash start_training.sh
@@ -508,10 +508,10 @@ python predict.py
 
 ```bash
 # RGB 模态预测
-/home/yz/miniforge3/envs/torch/bin/python3 predict_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 predict_fred.py --modality rgb
 
 # Event 模态预测
-/home/yz/miniforge3/envs/torch/bin/python3 predict_fred.py --modality event
+/home/yz/.conda/envs/torch/bin/python3 predict_fred.py --modality event
 ```
 
 ---
@@ -555,10 +555,10 @@ map_out/
 
 ```bash
 # RGB 模态评估
-/home/yz/miniforge3/envs/torch/bin/python3 eval_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 eval_fred.py --modality rgb
 
 # Event 模态评估
-/home/yz/miniforge3/envs/torch/bin/python3 eval_fred.py --modality event
+/home/yz/.conda/envs/torch/bin/python3 eval_fred.py --modality event
 
 # 快速评估（使用快捷脚本）
 bash quick_eval.sh
@@ -628,7 +628,7 @@ Unfreeze_batch_size = 4
 input_shape = [416, 416]  # 从 640 降到 416
 
 # 方案3: 禁用 mAP 评估（FRED 训练）
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality rgb --no_eval_map
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality rgb --no_eval_map
 ```
 
 #### No module named 'xxx'
@@ -915,13 +915,13 @@ python get_map.py
 
 ```bash
 # 1. 训练 RGB 模态
-/home/yz/miniforge3/envs/torch/bin/python3 train_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 train_fred.py --modality rgb
 
 # 2. 评估模型
-/home/yz/miniforge3/envs/torch/bin/python3 eval_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 eval_fred.py --modality rgb
 
 # 3. 预测测试
-/home/yz/miniforge3/envs/torch/bin/python3 predict_fred.py --modality rgb
+/home/yz/.conda/envs/torch/bin/python3 predict_fred.py --modality rgb
 
 # 4. 查看训练曲线
 tensorboard --logdir logs/fred_rgb/
@@ -950,5 +950,5 @@ python visualize_dataset.py --modality rgb --num_samples 10
 
 **最后更新**: 2025-10-24  
 **项目路径**: `/mnt/data/code/yolov5-pytorch`  
-**Python 环境**: `/home/yz/miniforge3/envs/torch/bin/python3`  
+**Python 环境**: `/home/yz/.conda/envs/torch/bin/python3`  
 **系统配置**: RTX 3090 / CUDA 12.4 / PyTorch 2.4.1

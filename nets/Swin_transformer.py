@@ -627,6 +627,26 @@ class SwinTransformer(nn.Module):
 
         return outs
     
+    def get_p5_feature(self, x):
+        """
+        获取P5特征层 (20x20)，用于HIGH_RES模式下的四特征层检测
+        """
+        x = self.patch_embed(x)
+        if self.ape:
+            x = x + self.absolute_pos_embed
+        x = self.pos_drop(x)
+
+        # 完整处理所有层
+        for i, layer in enumerate(self.layers):
+            x_, x = layer(x)
+        
+        # 只处理最后一个输出
+        H, W    = (self.patches_resolution[0] // (2 ** (self.num_layers)), self.patches_resolution[1] // (2 ** (self.num_layers)))
+        B, L, C = x.shape
+        x = x.view([B, H, W, C]).permute([0, 3, 1, 2])
+        
+        return x
+    
 def Swin_transformer_Tiny(pretrained = False, input_shape = [640, 640], **kwargs):
     model = SwinTransformer(input_shape, depths=[2, 2, 6, 2], **kwargs)
     if pretrained:

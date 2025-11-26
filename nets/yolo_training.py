@@ -8,12 +8,14 @@ import torch.nn as nn
 
 
 class YOLOLoss(nn.Module):
-    def __init__(self, anchors, num_classes, input_shape, cuda, anchors_mask = [[6,7,8], [3,4,5], [0,1,2]], label_smoothing = 0):
+    def __init__(self, anchors, num_classes, input_shape, cuda, anchors_mask = [[6,7,8], [3,4,5], [0,1,2]], label_smoothing = 0, high_res=False, four_features=False):
         super(YOLOLoss, self).__init__()
         #-----------------------------------------------------------#
-        #   20x20的特征层对应的anchor是[116,90],[156,198],[373,326]
-        #   40x40的特征层对应的anchor是[30,61],[62,45],[59,119]
-        #   80x80的特征层对应的anchor是[10,13],[16,30],[33,23]
+        #   高分辨率模式下的锚点配置（四特征层）：
+        #   20x20的特征层对应的anchor是[116,90],[156,198],[373,326] (原第一层)
+        #   40x40的特征层对应的anchor是[30,61],[62,45],[59,119] (原第二层)
+        #   80x80的特征层对应的anchor是[10,13],[16,30],[33,23] (原第三层)
+        #   160x160的特征层对应的anchor是[5,6],[8,10],[12,15] (新增微小锚点)
         #-----------------------------------------------------------#
         self.anchors        = anchors
         self.num_classes    = num_classes
@@ -21,10 +23,21 @@ class YOLOLoss(nn.Module):
         self.input_shape    = input_shape
         self.anchors_mask   = anchors_mask
         self.label_smoothing = label_smoothing
+        self.high_res        = high_res
+        self.four_features   = four_features
 
         self.threshold      = 4
 
-        self.balance        = [0.4, 1.0, 4]
+        if high_res:
+            if four_features:
+                # 高分辨率四特征层模式：调整权重，平衡各特征层
+                self.balance    = [0.4, 0.8, 2.0, 8.0]  # 对应20x20, 40x40, 80x80, 160x160
+            else:
+                # 高分辨率三特征层模式：调整权重，更关注高分辨率特征层
+                self.balance    = [0.8, 2.0, 8.0]  # 对应40x40, 80x80, 160x160
+        else:
+            self.balance    = [0.4, 1.0, 4]    # 原始权重
+            
         self.box_ratio      = 0.05
         self.obj_ratio      = 1 * (input_shape[0] * input_shape[1]) / (640 ** 2)
         self.cls_ratio      = 0.5 * (num_classes / 80)
@@ -136,12 +149,13 @@ class YOLOLoss(nn.Module):
         #-------------------------------------------------#
         scaled_anchors  = [(a_w / stride_w, a_h / stride_h) for a_w, a_h in self.anchors]
         #-----------------------------------------------#
-        #   输入的input一共有三个，他们的shape分别是
+        #   输入的input一共有三个或四个，他们的shape分别是
         #   bs, 3 * (5+num_classes), 20, 20 => bs, 3, 5 + num_classes, 20, 20 => batch_size, 3, 20, 20, 5 + num_classes
 
-        #   batch_size, 3, 20, 20, 5 + num_classes
-        #   batch_size, 3, 40, 40, 5 + num_classes
-        #   batch_size, 3, 80, 80, 5 + num_classes
+        #   batch_size, 3, 20, 20, 5 + num_classes (P5层, 仅四特征层)
+        #   batch_size, 3, 40, 40, 5 + num_classes (P4层)
+        #   batch_size, 3, 80, 80, 5 + num_classes (P3层)
+        #   batch_size, 3, 160, 160, 5 + num_classes (P2层, 仅高分辨率模式)
         #-----------------------------------------------#
         prediction = input.view(bs, len(self.anchors_mask[l]), self.bbox_attrs, in_h, in_w).permute(0, 1, 3, 4, 2).contiguous()
         

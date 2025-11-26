@@ -30,7 +30,21 @@ import argparse
 import random
 from pathlib import Path
 from collections import defaultdict
+
+# 设置 OpenCV 运行在无头模式（避免 GUI 相关错误）
+import os
+os.environ['OPENCV_IO_ENABLE_OPENEXR'] = '1'  # 如果需要支持 EXR 格式
+# 检测是否为无头环境（没有显示器）
+import sys
+HEADLESS = False
+if 'DISPLAY' not in os.environ or os.environ.get('SSH_CONNECTION') or os.environ.get('COLAB_GPU'):
+    HEADLESS = True
+    os.environ['QT_QPA_PLATFORM'] = 'offscreen'  # 设置 Qt 为无头模式
+
+# 更重要：设置 OpenCV 不使用 GUI
 import cv2
+cv2.setNumThreads(0)  # 避免多线程问题
+
 import numpy as np
 from tqdm import tqdm
 import logging
@@ -192,6 +206,11 @@ class FREDSequenceVisualizer:
         logger.info(f"🎬 可视化序列 {sequence_id} ({self.modality.upper()} 模态)")
         logger.info(f"{'='*70}")
         logger.info(f"📊 总帧数: {len(images)}")
+        # 在无头环境中自动禁用窗口显示
+        if HEADLESS and show_window:
+            show_window = False
+            logger.info("⚠️  检测到无头环境，已自动禁用窗口显示")
+            
         logger.info(f"📹 导出视频: {'是' if export_video else '否'}")
         logger.info(f"🖥️  显示窗口: {'是' if show_window else '否'}")
         if export_video:
@@ -314,8 +333,8 @@ class FREDSequenceVisualizer:
             if video_writer:
                 video_writer.write(frame)
             
-            # 显示窗口（仅在需要时）
-            if show_window and idx % 2 == 0:  # 每2帧显示一次，减少窗口刷新
+            # 显示窗口（仅在需要时且不是无头环境）
+            if show_window and not HEADLESS and idx % 2 == 0:  # 每2帧显示一次，减少窗口刷新
                 cv2.imshow(f'Sequence {sequence_id} - {self.modality.upper()}', frame)
                 
                 # 按 'q' 退出，按 'p' 暂停
@@ -333,7 +352,7 @@ class FREDSequenceVisualizer:
             file_size = video_file.stat().st_size / (1024 * 1024)  # MB
             logger.info(f"✓ 视频已保存: {video_file} ({file_size:.1f} MB)")
         
-        if show_window:
+        if show_window and not HEADLESS:
             cv2.destroyAllWindows()
         
         # 完善统计信息

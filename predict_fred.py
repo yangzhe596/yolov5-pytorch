@@ -16,7 +16,7 @@ import config_fred as cfg
 
 
 def predict_fred_dataset(modality='rgb', split='test', num_samples=10, 
-                         save_results=True, model_path=None):
+                         save_results=True, model_path=None, high_res=False, four_features=False):
     """
     在FRED数据集上进行预测
     
@@ -26,12 +26,19 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10,
         num_samples: 预测的样本数量（0表示全部）
         save_results: 是否保存预测结果
         model_path: 模型权重路径（None则使用配置文件中的最佳权重）
+        high_res: 是否使用高分辨率模式
+        four_features: 是否使用四特征层模式（需要high_res=True）
     """
     import json
     from pathlib import Path
     
     print("=" * 80)
-    print(f"FRED数据集预测 - {modality.upper()}模态 - {split}集")
+    if four_features:
+        print(f"FRED数据集预测 - {modality.upper()}模态 - {split}集 - 四特征层高分辨率模式")
+    elif high_res:
+        print(f"FRED数据集预测 - {modality.upper()}模态 - {split}集 - 高分辨率模式")
+    else:
+        print(f"FRED数据集预测 - {modality.upper()}模态 - {split}集")
     print("=" * 80)
     
     # 如果未指定模型路径，使用配置文件中的最佳权重
@@ -42,7 +49,12 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10,
     if not os.path.exists(model_path):
         print(f"错误: 模型文件不存在 {model_path}")
         print(f"\n请先训练模型:")
-        print(f"  python train_fred.py --modality {modality}")
+        if four_features:
+            print(f"  python train_fred.py --modality {modality} --high_res --four_features")
+        elif high_res:
+            print(f"  python train_fred.py --modality {modality} --high_res")
+        else:
+            print(f"  python train_fred.py --modality {modality}")
         return
     
     # 配置YOLO模型（使用配置文件中的参数）
@@ -66,7 +78,9 @@ def predict_fred_dataset(modality='rgb', split='test', num_samples=10,
         'phi': cfg.PHI,
         'confidence': 0.5,  # 预测时使用较高的置信度
         'nms_iou': 0.3,
-        'cuda': cfg.CUDA
+        'cuda': cfg.CUDA,
+        'high_res': high_res,
+        'four_features': four_features
     })
     
     # 加载COCO标注
@@ -150,8 +164,24 @@ def main():
                         help='不保存预测结果')
     parser.add_argument('--model_path', type=str, default='',
                         help='模型权重路径（默认使用配置文件中的最佳权重）')
+    parser.add_argument('--high_res', action='store_true',
+                        help='使用高分辨率模式模型')
+    parser.add_argument('--four_features', action='store_true',
+                        help='使用四特征层模式模型（需要同时指定--high_res）')
     
     args = parser.parse_args()
+    
+    # 配置高分辨率模式
+    if args.high_res:
+        cfg.configure_high_res_mode(True, args.four_features)
+        print(f"\n{'='*70}")
+        if args.four_features:
+            print("🔍 四特征层高分辨率模式已启用")
+            print("  - 特征层: 160x160, 80x80, 40x40, 20x20")
+        else:
+            print("🔍 高分辨率模式已启用")
+            print("  - 特征层: 160x160, 80x80, 40x40")
+        print(f"{'='*70}\n")
     
     # 如果未指定模型路径，使用None（函数内部会使用配置文件中的路径）
     model_path = args.model_path if args.model_path else None
@@ -162,7 +192,9 @@ def main():
         split=args.split,
         num_samples=args.num_samples,
         save_results=not args.no_save,
-        model_path=model_path
+        model_path=model_path,
+        high_res=args.high_res,
+        four_features=args.four_features
     )
 
 

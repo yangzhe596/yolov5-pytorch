@@ -7,7 +7,7 @@ echo "========================================"
 echo ""
 
 # 设置Python环境
-PYTHON=/home/yz/miniforge3/envs/torch/bin/python3
+PYTHON=/home/yz/.conda/envs/torch/bin/python3
 
 # 默认参数
 COCO_ROOT="/mnt/data/datasets/fred"

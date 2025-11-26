@@ -5,11 +5,15 @@ import operator
 import os
 import shutil
 import sys
+import gc
 try:
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
-except:
-    pass
+    COCO_AVAILABLE = True
+except ImportError:
+    COCO_AVAILABLE = False
+    COCO = None
+    COCOeval = None
 import cv2
 import matplotlib
 matplotlib.use('Agg')
@@ -892,6 +896,10 @@ def preprocess_dr(dr_path, class_names):
     return results
  
 def get_coco_map(class_names, path):
+    # 检查COCO API是否可用
+    if not COCO_AVAILABLE:
+        raise ImportError("pycocotools is not installed or not available")
+        
     GT_PATH     = os.path.join(path, 'ground-truth')
     DR_PATH     = os.path.join(path, 'detection-results')
     COCO_PATH   = os.path.join(path, 'coco_eval')
@@ -913,11 +921,22 @@ def get_coco_map(class_names, path):
             print("未检测到任何目标。")
             return [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
 
-    cocoGt      = COCO(GT_JSON_PATH)
-    cocoDt      = cocoGt.loadRes(DR_JSON_PATH)
-    cocoEval    = COCOeval(cocoGt, cocoDt, 'bbox') 
-    cocoEval.evaluate()
-    cocoEval.accumulate()
-    cocoEval.summarize()
-
-    return cocoEval.stats
+    try:
+        cocoGt      = COCO(GT_JSON_PATH)
+        cocoDt      = cocoGt.loadRes(DR_JSON_PATH)
+        cocoEval    = COCOeval(cocoGt, cocoDt, 'bbox') 
+        cocoEval.evaluate()
+        cocoEval.accumulate()
+        cocoEval.summarize()
+        
+        # 获取结果
+        stats = cocoEval.stats
+        
+        return stats
+    finally:
+        # 立即清理内存
+        try:
+            del cocoGt, cocoDt, cocoEval
+        except:
+            pass
+        gc.collect()

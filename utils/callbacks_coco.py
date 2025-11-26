@@ -194,8 +194,14 @@ class CocoEvalCallback:
             
             # 遍历验证集
             for img_info in tqdm(eval_images, desc="Evaluating"):
+                # 支持 Fusion 数据集格式（rgb_file_name, event_file_name）
+                # 优先使用 rgb_file_name，如果没有则使用 event_file_name
+                file_name = img_info.get('file_name') or img_info.get('rgb_file_name') or img_info.get('event_file_name')
+                
+                if not file_name:
+                    continue
+                
                 # 只使用文件名（不包含目录），避免路径问题
-                file_name = img_info['file_name']
                 image_id = os.path.splitext(os.path.basename(file_name))[0]
                 img_path = os.path.join(self.image_dir, file_name)
                 

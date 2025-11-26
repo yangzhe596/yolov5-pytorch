@@ -21,6 +21,9 @@ FRED 数据集转换为 COCO 格式 - YOLOv5 兼容版本
     
     # 仅转换 RGB 模态
     python convert_fred_to_coco_v2.py --modality rgb
+    
+    # 简化模式：随机抽取 10% 数据
+    python convert_fred_to_coco_v2.py --simple
 """
 
 import os
@@ -45,7 +48,7 @@ logger = logging.getLogger(__name__)
 class FREDtoCOCOConverter:
     """FRED 数据集转换为 COCO 格式"""
     
-    def __init__(self, fred_root, output_root, split_mode='frame'):
+    def __init__(self, fred_root, output_root, split_mode='frame', simple=False, simple_ratio=0.1):
         """
         初始化转换器
         
@@ -53,10 +56,14 @@ class FREDtoCOCOConverter:
             fred_root: FRED 数据集根目录
             output_root: 输出目录
             split_mode: 'frame' 或 'sequence'
+            simple: 是否启用简化模式
+            simple_ratio: 简化模式下的采样比例
         """
         self.fred_root = Path(fred_root)
         self.output_root = Path(output_root)
         self.split_mode = split_mode
+        self.simple = simple
+        self.simple_ratio = simple_ratio
         
         if not self.fred_root.exists():
             raise FileNotFoundError(f"FRED 数据集根目录不存在: {self.fred_root}")
@@ -73,6 +80,8 @@ class FREDtoCOCOConverter:
         logger.info(f"FRED 根目录: {self.fred_root}")
         logger.info(f"输出目录: {self.output_root}")
         logger.info(f"划分模式: {split_mode}")
+        if self.simple:
+            logger.info(f"简化模式: 随机采样 {self.simple_ratio * 100:.1f}% 数据")
     
     def get_all_sequences(self):
         """获取所有可用的序列 ID"""
@@ -277,6 +286,14 @@ class FREDtoCOCOConverter:
         
         return True, (x1, y1, x2, y2)
     
+    def _get_relative_path(self, sequence_id, frame_path):
+        """生成相对于 FRED 根目录的相对路径"""
+        try:
+            relative_path = frame_path.relative_to(self.fred_root)
+            return str(relative_path)
+        except ValueError:
+            return f"{sequence_id}/{frame_path.name}"
+    
     def process_sequence(self, sequence_id, modality, image_id_offset=0, 
                         annotation_id_offset=0):
         """
@@ -324,7 +341,15 @@ class FREDtoCOCOConverter:
         # 图像尺寸（FRED 数据集固定尺寸）
         width, height = 1280, 720
         
-        for timestamp, frame_path in frames:
+        for idx, (timestamp, frame_path) in enumerate(frames):
+            # 简化模式下过滤非采样帧
+            if self.simple and self.sampled_frames is not None:
+                key = (sequence_id, modality, idx, timestamp)
+                if key not in self.sampled_frames:
+                    continue
+                # 标记帧已使用，避免重复计数
+                self.sampled_frames.remove(key)
+            
             # 查找匹配的标注
             anns = self.find_closest_annotation(timestamp, annotations_dict)
             
@@ -334,17 +359,9 @@ class FREDtoCOCOConverter:
             
             stats['matched_frames'] += 1
             
-            # 生成相对路径（相对于 FRED 根目录）
-            try:
-                relative_path = frame_path.relative_to(self.fred_root)
-                file_name = str(relative_path)
-            except ValueError:
-                file_name = f"{sequence_id}/{frame_path.name}"
-            
-            # 创建图像条目
             image_entry = {
                 "id": image_id,
-                "file_name": file_name,
+                "file_name": self._get_relative_path(sequence_id, frame_path),
                 "width": width,
                 "height": height,
                 "sequence_id": sequence_id,
@@ -352,32 +369,19 @@ class FREDtoCOCOConverter:
             }
             images.append(image_entry)
             
-            # 创建标注条目
             for ann in anns:
                 bbox = ann['bbox']
-                
-                # 验证边界框
                 is_valid, corrected_bbox = self.validate_bbox(bbox, width, height)
-                
                 if not is_valid:
                     stats['invalid_bboxes'] += 1
                     continue
-                
                 x1, y1, x2, y2 = corrected_bbox
-                
-                # 转换为 COCO 格式: [x, y, width, height]
-                bbox_coco = [
-                    float(x1),
-                    float(y1),
-                    float(x2 - x1),
-                    float(y2 - y1)
-                ]
+                bbox_coco = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
                 area = float((x2 - x1) * (y2 - y1))
-                
                 annotation_entry = {
                     "id": annotation_id,
                     "image_id": image_id,
-                    "category_id": 1,  # drone
+                    "category_id": 1,
                     "bbox": bbox_coco,
                     "area": area,
                     "iscrowd": 0,
@@ -512,7 +516,7 @@ class FREDtoCOCOConverter:
         return coco_dict, total_stats
     
     def generate_frame_split(self, modality, train_ratio=0.7, val_ratio=0.15, 
-                            test_ratio=0.15, seed=42):
+                            test_ratio=0.15, seed=42, sequences=None):
         """
         生成帧级别划分的 COCO 数据集
         
@@ -522,6 +526,7 @@ class FREDtoCOCOConverter:
             val_ratio: 验证集比例
             test_ratio: 测试集比例
             seed: 随机种子
+            sequences: 可选的序列列表（用于简化模式）
             
         Returns:
             dict: 包含 train/val/test 的字典
@@ -530,7 +535,12 @@ class FREDtoCOCOConverter:
         logger.info(f"帧级别划分 - {modality.upper()} 模态")
         logger.info(f"{'='*70}")
         
-        sequences = self.get_all_sequences()
+        if sequences is None:
+            sequences = self.get_all_sequences()
+        else:
+            sequences = sorted(sequences)
+        
+        logger.info(f"使用 {len(sequences)} 个序列生成帧级别划分")
         
         # 收集所有帧
         all_frames = {
@@ -621,10 +631,58 @@ class FREDtoCOCOConverter:
         
         modalities = ['rgb', 'event'] if modality == 'both' else [modality]
         
+        if self.simple:
+            logger.info("启用简化模式: 随机采样帧数据")
+            random.seed(seed)
+        
+        # 预扫描选择所有帧（用于简化模式）
+        self.sampled_frames = None
+        if self.simple:
+            logger.info("统计所有帧用以采样 10%")
+            frame_index = []  # 存储 (sequence_id, modality, frame_idx_in_sequence, timestamp)
+            for seq_id in self.get_all_sequences():
+                sequence_path = self.fred_root / str(seq_id)
+                annotations_dict = self.load_annotations(sequence_path)
+                if not annotations_dict:
+                    continue
+                for modality_candidate in ('rgb', 'event'):
+                    frames = self.get_frames(sequence_path, modality_candidate)
+                    for idx, (timestamp, _) in enumerate(frames):
+                        anns = self.find_closest_annotation(timestamp, annotations_dict)
+                        if anns:
+                            frame_index.append((seq_id, modality_candidate, idx, timestamp))
+            if not frame_index:
+                raise ValueError("未找到任何带标注的帧，无法执行简化模式采样")
+            sample_size = max(1, int(len(frame_index) * self.simple_ratio))
+            self.sampled_frames = set(random.sample(frame_index, sample_size))
+            logger.info(f"总可用帧: {len(frame_index)}, 采样帧数: {len(self.sampled_frames)}")
+        
         for mod in modalities:
             if self.split_mode == 'sequence':
-                # 序列级别划分
                 sequences = self.get_all_sequences()
+                train_seqs, val_seqs, test_seqs = self.split_sequences(
+                    sequences, train_ratio, val_ratio, test_ratio, seed
+                )
+                
+                logger.info(f"\n序列划分:")
+                logger.info(f"  训练: {len(train_seqs)} 序列")
+                logger.info(f"  验证: {len(val_seqs)} 序列")
+                logger.info(f"  测试: {len(test_seqs)} 序列")
+                
+                for split_name, seqs in [('train', train_seqs), 
+                                        ('val', val_seqs), 
+                                        ('test', test_seqs)]:
+                    coco_dict, stats = self.generate_coco_split(seqs, mod, split_name)
+                    
+                    output_file = self.output_root / mod / 'annotations' / \
+                                 f'instances_{split_name}.json'
+                    output_file.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    with open(output_file, 'w') as f:
+                        json.dump(coco_dict, f, indent=2)
+                    
+                    logger.info(f"✓ 已保存: {output_file}")
+            
                 train_seqs, val_seqs, test_seqs = self.split_sequences(
                     sequences, train_ratio, val_ratio, test_ratio, seed
                 )
@@ -650,7 +708,8 @@ class FREDtoCOCOConverter:
             
             else:  # frame-level
                 results = self.generate_frame_split(
-                    mod, train_ratio, val_ratio, test_ratio, seed
+                    mod, train_ratio, val_ratio, test_ratio, seed,
+                    sequences=None
                 )
                 
                 for split_name, coco_dict in results.items():
@@ -699,6 +758,9 @@ def main():
   # 仅转换 RGB 模态
   python convert_fred_to_coco_v2.py --modality rgb
   
+  # 简化模式（随机采样 10% 数据）
+  python convert_fred_to_coco_v2.py --simple
+  
   # 自定义划分比例
   python convert_fred_to_coco_v2.py --train-ratio 0.8 --val-ratio 0.1 --test-ratio 0.1
         """
@@ -726,6 +788,10 @@ def main():
                        help='测试集比例')
     parser.add_argument('--seed', type=int, default=42,
                        help='随机种子')
+    parser.add_argument('--simple', action='store_true',
+                       help='启用简化模式，随机采样 10% 数据')
+    parser.add_argument('--simple-ratio', type=float, default=0.1,
+                       help='简化模式下的数据采样比例（默认 0.1）')
     
     args = parser.parse_args()
     
@@ -739,7 +805,9 @@ def main():
         converter = FREDtoCOCOConverter(
             fred_root=args.fred_root,
             output_root=args.output_root,
-            split_mode=args.split_mode
+            split_mode=args.split_mode,
+            simple=args.simple,
+            simple_ratio=args.simple_ratio
         )
         
         converter.generate_all_splits(

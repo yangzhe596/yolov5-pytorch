@@ -1,7 +1,7 @@
 #!/bin/bash
 # 可视化特定图片的快捷脚本
 
-PYTHON=/home/yz/miniforge3/envs/torch/bin/python3
+PYTHON=/home/yz/.conda/envs/torch/bin/python3
 
 # 获取脚本所在目录
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"

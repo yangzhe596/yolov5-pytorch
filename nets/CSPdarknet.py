@@ -89,12 +89,16 @@ class SPP(nn.Module):
         return self.cv2(torch.cat([x] + [m(x) for m in self.m], 1))
         
 class CSPDarknet(nn.Module):
-    def __init__(self, base_channels, base_depth, phi, pretrained):
+    def __init__(self, base_channels, base_depth, phi, pretrained, high_res=False, four_features=False):
         super().__init__()
         #-----------------------------------------------#
         #   输入图片是640, 640, 3
         #   初始的基本通道base_channels是64
         #-----------------------------------------------#
+        self.high_res = high_res
+        self.four_features = four_features
+        self.base_channels = base_channels
+        self.base_depth = base_depth
 
         #-----------------------------------------------#
         #   利用focus网络结构进行特征提取
@@ -102,49 +106,63 @@ class CSPDarknet(nn.Module):
         #-----------------------------------------------#
         self.stem       = Focus(3, base_channels, k=3)
         
-        #-----------------------------------------------#
-        #   完成卷积之后，320, 320, 64 -> 160, 160, 128
-        #   完成CSPlayer之后，160, 160, 128 -> 160, 160, 128
-        #-----------------------------------------------#
-        self.dark2 = nn.Sequential(
+        if high_res:
+            #-----------------------------------------------#
+            #   高分辨率模式：输出160x160, 80x80, 40x40, 20x20四个特征层
+            #-----------------------------------------------#
             # 320, 320, 64 -> 160, 160, 128
-            Conv(base_channels, base_channels * 2, 3, 2),
-            # 160, 160, 128 -> 160, 160, 128
-            C3(base_channels * 2, base_channels * 2, base_depth),
-        )
-        
-        #-----------------------------------------------#
-        #   完成卷积之后，160, 160, 128 -> 80, 80, 256
-        #   完成CSPlayer之后，80, 80, 256 -> 80, 80, 256
-        #                   在这里引出有效特征层80, 80, 256
-        #                   进行加强特征提取网络FPN的构建
-        #-----------------------------------------------#
-        self.dark3 = nn.Sequential(
-            Conv(base_channels * 2, base_channels * 4, 3, 2),
-            C3(base_channels * 4, base_channels * 4, base_depth * 3),
-        )
+            self.dark2 = nn.Sequential(
+                Conv(base_channels, base_channels * 2, 3, 2),
+                C3(base_channels * 2, base_channels * 2, base_depth),
+            )
+            
+            # 160, 160, 128 -> 80, 80, 256
+            self.dark3 = nn.Sequential(
+                Conv(base_channels * 2, base_channels * 4, 3, 2),
+                C3(base_channels * 4, base_channels * 4, base_depth * 3),
+            )
 
-        #-----------------------------------------------#
-        #   完成卷积之后，80, 80, 256 -> 40, 40, 512
-        #   完成CSPlayer之后，40, 40, 512 -> 40, 40, 512
-        #                   在这里引出有效特征层40, 40, 512
-        #                   进行加强特征提取网络FPN的构建
-        #-----------------------------------------------#
-        self.dark4 = nn.Sequential(
-            Conv(base_channels * 4, base_channels * 8, 3, 2),
-            C3(base_channels * 8, base_channels * 8, base_depth * 3),
-        )
-        
-        #-----------------------------------------------#
-        #   完成卷积之后，40, 40, 512 -> 20, 20, 1024
-        #   完成SPP之后，20, 20, 1024 -> 20, 20, 1024
-        #   完成CSPlayer之后，20, 20, 1024 -> 20, 20, 1024
-        #-----------------------------------------------#
-        self.dark5 = nn.Sequential(
-            Conv(base_channels * 8, base_channels * 16, 3, 2),
-            SPP(base_channels * 16, base_channels * 16),
-            C3(base_channels * 16, base_channels * 16, base_depth, shortcut=False),
-        )
+            # 80, 80, 256 -> 40, 40, 512
+            self.dark4 = nn.Sequential(
+                Conv(base_channels * 4, base_channels * 8, 3, 2),
+                C3(base_channels * 8, base_channels * 8, base_depth * 3),
+            )
+            
+            # 新增：40, 40, 512 -> 20, 20, 1024
+            self.dark5 = nn.Sequential(
+                Conv(base_channels * 8, base_channels * 16, 3, 2),
+                SPP(base_channels * 16, base_channels * 16),
+                C3(base_channels * 16, base_channels * 16, base_depth, shortcut=False),
+            )
+        else:
+            #-----------------------------------------------#
+            #   原始模式：输出80,80, 40,40, 20,20三个特征层
+            #-----------------------------------------------#
+            # 320, 320, 64 -> 160, 160, 128
+            self.dark2 = nn.Sequential(
+                Conv(base_channels, base_channels * 2, 3, 2),
+                C3(base_channels * 2, base_channels * 2, base_depth),
+            )
+            
+            # 160, 160, 128 -> 80, 80, 256
+            self.dark3 = nn.Sequential(
+                Conv(base_channels * 2, base_channels * 4, 3, 2),
+                C3(base_channels * 4, base_channels * 4, base_depth * 3),
+            )
+
+            # 80, 80, 256 -> 40, 40, 512
+            self.dark4 = nn.Sequential(
+                Conv(base_channels * 4, base_channels * 8, 3, 2),
+                C3(base_channels * 8, base_channels * 8, base_depth * 3),
+            )
+            
+            # 40, 40, 512 -> 20, 20, 1024
+            self.dark5 = nn.Sequential(
+                Conv(base_channels * 8, base_channels * 16, 3, 2),
+                SPP(base_channels * 16, base_channels * 16),
+                C3(base_channels * 16, base_channels * 16, base_depth, shortcut=False),
+            )
+            
         if pretrained:
             url = {
                 's' : 'https://github.com/bubbliiiing/yolov5-pytorch/releases/download/v1.0/cspdarknet_s_backbone.pth',
@@ -159,19 +177,50 @@ class CSPDarknet(nn.Module):
     def forward(self, x):
         x = self.stem(x)
         x = self.dark2(x)
-        #-----------------------------------------------#
-        #   dark3的输出为80, 80, 256，是一个有效特征层
-        #-----------------------------------------------#
+        
+        if self.high_res:
+            #-----------------------------------------------#
+            #   高分辨率模式：输出160x160, 80x80, 40x40三个特征层
+            #-----------------------------------------------#
+            # dark2的输出为160, 160, 128，是一个有效特征层
+            feat0 = x
+            
+            # dark3的输出为80, 80, 256，是一个有效特征层
+            x = self.dark3(x)
+            feat1 = x
+            
+            # dark4的输出为40, 40, 512，是一个有效特征层
+            x = self.dark4(x)
+            feat2 = x
+            
+            return feat0, feat1, feat2
+        else:
+            #-----------------------------------------------#
+            #   原始模式：输出80,80, 40,40, 20,20三个特征层
+            #-----------------------------------------------#
+            # dark3的输出为80, 80, 256，是一个有效特征层
+            x = self.dark3(x)
+            feat1 = x
+            
+            # dark4的输出为40, 40, 512，是一个有效特征层
+            x = self.dark4(x)
+            feat2 = x
+            
+            # dark5的输出为20, 20, 1024，是一个有效特征层
+            x = self.dark5(x)
+            feat3 = x
+            
+            return feat1, feat2, feat3
+    
+    def get_p5_feature(self, x):
+        """
+        获取P5特征层 (20x20)，用于HIGH_RES模式下的四特征层检测
+        """
+        x = self.stem(x)
+        x = self.dark2(x)
         x = self.dark3(x)
-        feat1 = x
-        #-----------------------------------------------#
-        #   dark4的输出为40, 40, 512，是一个有效特征层
-        #-----------------------------------------------#
         x = self.dark4(x)
-        feat2 = x
-        #-----------------------------------------------#
-        #   dark5的输出为20, 20, 1024，是一个有效特征层
-        #-----------------------------------------------#
+        
+        # 获取P5特征层
         x = self.dark5(x)
-        feat3 = x
-        return feat1, feat2, feat3
+        return x
