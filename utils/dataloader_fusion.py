@@ -198,7 +198,7 @@ class FusionYoloDataset(Dataset):
         """获取训练样本
         
         Returns:
-            image: 预处理后的图像 [C, H, W]
+            image: 预处理后的图像 [C, H, W] 或 (rgb_image, event_image)
             boxes: 边界框信息 [N, 5] or []
             y_true: 训练目标 (多层特征图)
             fusion_info: 融合信息（字典）或 None
@@ -211,9 +211,8 @@ class FusionYoloDataset(Dataset):
         elif self.modality == 'event':
             image, box = self._load_event_data(index)
         else:  # dual
-            # Dual模式：同时加载 RGB 和 Event
-            rgb_image, rgb_box = self._load_rgb_data(index)
-            event_image, event_box = self._load_event_data(index)
+            # Dual模式：使用同步数据增强
+            rgb_image, event_image, box = self._load_dual_data(index)
         
         # 数据增强
         if self.mosaic and self.rand() < self.mosaic_prob and self.epoch_now < self.epoch_length * self.special_aug_ratio:
@@ -230,7 +229,7 @@ class FusionYoloDataset(Dataset):
                 shuffle(indices)
                 image, box = self.get_random_data_with_Mosaic_Event(indices, self.input_shape)
             else:
-                # Dual Mosaic（同时增强 RGB 和 Event）
+                # Dual Mosaic（同步增强 RGB 和 Event）
                 indices = sample(range(self.length), 3)
                 indices.append(index)
                 shuffle(indices)
@@ -240,15 +239,17 @@ class FusionYoloDataset(Dataset):
                 mix_index = sample(range(self.length), 1)[0]
                 if self.modality == 'rgb':
                     image_2, box_2 = self._load_rgb_data(mix_index, augment=True)
+                    image, box = self.get_random_data_with_MixUp(image, box, image_2, box_2)
                 elif self.modality == 'event':
                     image_2, box_2 = self._load_event_data(mix_index, augment=True)
-                else:
-                    # Dual 模式的 MixUp
-                    rgb_image_2, event_image_2, box_2 = self.get_random_dual_mosaic([mix_index, mix_index, mix_index, mix_index], self.input_shape)
-                    rgb_image, rgb_box = self.get_random_data_with_MixUp(rgb_image, box, rgb_image_2, box_2)
-                    event_image, box = self.get_random_data_with_MixUp(event_image, box, event_image_2, box_2)
-                if self.modality != 'dual':
                     image, box = self.get_random_data_with_MixUp(image, box, image_2, box_2)
+                else:
+                    # Dual 模式的 MixUp（同步处理）
+                    rgb_image_2, event_image_2, box_2 = self._load_dual_data(mix_index, augment=True)
+                    rgb_image, event_image, box = self.get_random_dual_mixup(
+                        rgb_image, event_image, box, 
+                        rgb_image_2, event_image_2, box_2
+                    )
         else:
             # 不使用 Mosaic，使用单样本增强
             if self.modality == 'rgb':
@@ -256,19 +257,15 @@ class FusionYoloDataset(Dataset):
             elif self.modality == 'event':
                 image, box = self._load_event_data(index, augment=True)
             else:
-                # Dual 模式：同时加载 RGB 和 Event
-                rgb_image, rgb_box = self._load_rgb_data(index, augment=True)
-                event_image, event_box = self._load_event_data(index, augment=True)
-                # 对于 Dual 模式，只使用 RGB 的边界框（假设对齐）
-                box = rgb_box
+                # Dual 模式：使用同步数据增强
+                rgb_image, event_image, box = self._load_dual_data(index, augment=True)
         
         # 预处理
         if self.modality == 'dual':
             # Dual 模式：分别预处理两个图像
             rgb_image = np.transpose(preprocess_input(np.array(rgb_image, dtype=np.float32)), (2, 0, 1))
             event_image = np.transpose(preprocess_input(np.array(event_image, dtype=np.float32)), (2, 0, 1))
-        
-        if self.modality != 'dual':
+        else:
             image = np.transpose(preprocess_input(np.array(image, dtype=np.float32)), (2, 0, 1))
         
         box = np.array(box, dtype=np.float32)
@@ -340,6 +337,26 @@ class FusionYoloDataset(Dataset):
         else:
             return self._apply_letterbox(image, box)
     
+    def _load_dual_data(self, index, augment=True):
+        """加载双模态数据（RGB + Event）并确保应用相同的变换
+        
+        Returns:
+            rgb_image: RGB 图像
+            event_image: Event 图像
+            box: 边界框
+        """
+        info = self.image_infos[index % len(self.image_infos)]
+        rgb_image = self._load_image_cv2(info['rgb_path'])
+        event_image = self._load_image_cv2(info['event_path'])
+        box = info['boxes'].copy()
+        
+        if augment:
+            # 使用同步增强，确保两个模态应用相同的变换
+            return self._apply_dual_augmentation(rgb_image, event_image, box)
+        else:
+            # 使用同步 letterbox
+            return self._apply_dual_letterbox(rgb_image, event_image, box)
+    
     def _apply_letterbox(self, image, box):
         """Letterbox 缩放（保持长宽比，填充黑边）"""
         ih, iw = image.shape[:2]
@@ -371,6 +388,46 @@ class FusionYoloDataset(Dataset):
             box = box[np.logical_and(box_w > 1, box_h > 1)]
         
         return new_image, box
+    
+    def _apply_dual_letterbox(self, rgb_image, event_image, box):
+        """双模态同步 Letterbox 缩放（保持长宽比，填充黑边）
+        
+        确保两个模态应用相同的缩放和平移变换
+        """
+        ih, iw = rgb_image.shape[:2]  # 假设两个图像尺寸相同
+        h, w = self.input_shape
+        
+        # 计算缩放比例
+        scale = min(w/iw, h/ih)
+        nw = int(iw * scale)
+        nh = int(ih * scale)
+        dx = (w - nw) // 2
+        dy = (h - nh) // 2
+        
+        # 缩放并填充 RGB 图像
+        rgb_image = cv2.resize(rgb_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        new_rgb_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        new_rgb_image[dy:dy+nh, dx:dx+nw, :] = rgb_image
+        
+        # 缩放并填充 Event 图像（使用相同的变换参数）
+        event_image = cv2.resize(event_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        new_event_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        new_event_image[dy:dy+nh, dx:dx+nw, :] = event_image
+        
+        # 调整边界框
+        if len(box) > 0:
+            box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
+            box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
+            
+            # 过滤边界框
+            box[:, 0:2][box[:, 0:2] < 0] = 0
+            box[:, 2][box[:, 2] > w] = w
+            box[:, 3][box[:, 3] > h] = h
+            box_w = box[:, 2] - box[:, 0]
+            box_h = box[:, 3] - box[:, 1]
+            box = box[np.logical_and(box_w > 1, box_h > 1)]
+        
+        return new_rgb_image, new_event_image, box
     
     def _apply_augmentation(self, image, box):
         """应用数据增强"""
@@ -439,6 +496,86 @@ class FusionYoloDataset(Dataset):
         
         return image_data, box
     
+    def _apply_dual_augmentation(self, rgb_image, event_image, box):
+        """双模态同步数据增强
+        
+        确保两个模态应用相同的几何变换（缩放、平移、翻转）
+        但应用不同的颜色增强（HSV变换仅对RGB图像）
+        """
+        ih, iw = rgb_image.shape[:2]  # 假设两个图像尺寸相同
+        h, w = self.input_shape
+        jitter = 0.3
+        hue = 0.1
+        sat = 0.7
+        val = 0.4
+        
+        # 随机缩放和扭曲（相同的参数）
+        new_ar = iw/ih * self.rand(1-jitter, 1+jitter) / self.rand(1-jitter, 1+jitter)
+        scale = self.rand(0.25, 2)
+        if new_ar < 1:
+            nh = int(scale * h)
+            nw = int(nh * new_ar)
+        else:
+            nw = int(scale * w)
+            nh = int(nw / new_ar)
+        
+        # 缩放两个图像
+        rgb_image = cv2.resize(rgb_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        event_image = cv2.resize(event_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        
+        # 放置到新图像（相同的平移参数）
+        dx = int(self.rand(0, w-nw))
+        dy = int(self.rand(0, h-nh))
+        new_rgb_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        new_event_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        
+        # 安全复制（避免越界）
+        if nw > w or nh > h:
+            src_x1 = max(0, -dx)
+            src_y1 = max(0, -dy)
+            src_x2 = min(nw, w - dx)
+            src_y2 = min(nh, h - dy)
+            
+            dst_x1 = max(0, dx)
+            dst_y1 = max(0, dy)
+            dst_x2 = min(w, dx + nw)
+            dst_y2 = min(h, dy + nh)
+            
+            new_rgb_image[dst_y1:dst_y2, dst_x1:dst_x2, :] = rgb_image[src_y1:src_y2, src_x1:src_x2, :]
+            new_event_image[dst_y1:dst_y2, dst_x1:dst_x2, :] = event_image[src_y1:src_y2, src_x1:src_x2, :]
+        else:
+            new_rgb_image[dy:dy+nh, dx:dx+nw, :] = rgb_image
+            new_event_image[dy:dy+nh, dx:dx+nw, :] = event_image
+        
+        # 水平翻转（相同的翻转参数）
+        flip = self.rand() < 0.5
+        if flip:
+            new_rgb_image = cv2.flip(new_rgb_image, 1)
+            new_event_image = cv2.flip(new_event_image, 1)
+        
+        # HSV 色域变换（仅对RGB图像）
+        rgb_image_data = self._apply_hsv_augmentation(new_rgb_image, hue, sat, val)
+        # Event 图像不进行HSV增强，保持原始灰度信息
+        event_image_data = new_event_image
+        
+        # 调整边界框（使用相同的变换参数）
+        if len(box) > 0:
+            np.random.shuffle(box)
+            box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
+            box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
+            
+            if flip:
+                box[:, [0, 2]] = w - box[:, [2, 0]]
+            
+            box[:, 0:2][box[:, 0:2] < 0] = 0
+            box[:, 2][box[:, 2] > w] = w
+            box[:, 3][box[:, 3] > h] = h
+            box_w = box[:, 2] - box[:, 0]
+            box_h = box[:, 3] - box[:, 1]
+            box = box[np.logical_and(box_w > 1, box_h > 1)]
+        
+        return rgb_image_data, event_image_data, box
+    
     def _apply_hsv_augmentation(self, image, hue=0.1, sat=0.7, val=0.4):
         """HSV 色域变换"""
         r = np.random.uniform(-1, 1, 3) * [hue, sat, val] + 1
@@ -468,12 +605,106 @@ class FusionYoloDataset(Dataset):
         return self._get_random_mosaic(indices, input_shape, modality='event')
     
     def get_random_dual_mosaic(self, indices, input_shape):
-        """双模态 Mosaic 数据增强（同时处理 RGB 和 Event）"""
-        # 同时为 RGB 和 Event 创建 Mosaic
-        rgb_image, rgb_box = self._get_random_mosaic(indices, input_shape, modality='rgb')
-        event_image, event_box = self._get_random_mosaic(indices, input_shape, modality='event')
-        # 对于 Dual 模式，使用 RGB 的边界框
-        return rgb_image, event_image, rgb_box
+        """双模态 Mosaic 数据增强（同步处理 RGB 和 Event）
+        
+        确保两个模态应用相同的 Mosaic 变换
+        """
+        h, w = input_shape
+        min_offset_x = self.rand(0.3, 0.7)
+        min_offset_y = self.rand(0.3, 0.7)
+        
+        cutx = int(w * min_offset_x)
+        cuty = int(h * min_offset_y)
+        
+        # 预分配图像（减少内存分配）
+        rgb_mosaic_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        event_mosaic_image = np.full((h, w, 3), 128, dtype=np.uint8)
+        box_datas = []
+        
+        for idx, i in enumerate(indices):
+            info = self.image_infos[i % len(self.image_infos)]
+            
+            # 加载 RGB 和 Event 图像
+            rgb_image = self._load_image_cv2(info['rgb_path'])
+            event_image = self._load_image_cv2(info['event_path'])
+            
+            ih, iw = rgb_image.shape[:2]  # 假设两个图像尺寸相同
+            box = info['boxes'].copy()
+            
+            # 翻转（相同的翻转参数）
+            flip = self.rand() < 0.5
+            if flip and len(box) > 0:
+                rgb_image = cv2.flip(rgb_image, 1)
+                event_image = cv2.flip(event_image, 1)
+                box[:, [0, 2]] = iw - box[:, [2, 0]]
+            
+            # 缩放（相同的缩放参数）
+            new_ar = iw/ih * self.rand(0.8, 1.2) / self.rand(0.8, 1.2)
+            scale = self.rand(0.4, 1)
+            if new_ar < 1:
+                nh = int(scale * h)
+                nw = int(nh * new_ar)
+            else:
+                nw = int(scale * w)
+                nh = int(nw / new_ar)
+            
+            rgb_image = cv2.resize(rgb_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            event_image = cv2.resize(event_image, (nw, nh), interpolation=cv2.INTER_LINEAR)
+            
+            # 计算放置位置（相同的平移参数）
+            if idx == 0:  # 左上
+                dx = cutx - nw
+                dy = cuty - nh
+            elif idx == 1:  # 右上
+                dx = cutx
+                dy = cuty - nh
+            elif idx == 2:  # 左下
+                dx = cutx - nw
+                dy = cuty
+            else:  # 右下
+                dx = cutx
+                dy = cuty
+            
+            # 计算有效区域
+            x1a = max(0, dx)
+            y1a = max(0, dy)
+            x2a = min(w, dx + nw)
+            y2a = min(h, dy + nh)
+            
+            x1b = max(0, -dx)
+            y1b = max(0, -dy)
+            x2b = min(nw, w - dx)
+            y2b = min(nh, h - dy)
+            
+            # 复制到 Mosaic 图像（相同的区域）
+            if x2a > x1a and y2a > y1a:
+                rgb_mosaic_image[y1a:y2a, x1a:x2a, :] = rgb_image[y1b:y2b, x1b:x2b, :]
+                event_mosaic_image[y1a:y2a, x1a:x2a, :] = event_image[y1b:y2b, x1b:x2b, :]
+            
+            # 调整边界框（使用相同的变换参数）
+            if len(box) > 0:
+                np.random.shuffle(box)
+                box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
+                box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
+                box[:, 0:2][box[:, 0:2] < 0] = 0
+                box[:, 2][box[:, 2] > w] = w
+                box[:, 3][box[:, 3] > h] = h
+                box_w = box[:, 2] - box[:, 0]
+                box_h = box[:, 3] - box[:, 1]
+                box = box[np.logical_and(box_w > 1, box_h > 1)]
+                
+                if len(box) > 0:
+                    box_data = np.zeros((len(box), 5))
+                    box_data[:len(box)] = box
+                    box_datas.append(box_data)
+                else:
+                    box_datas.append(np.array([]))
+            else:
+                box_datas.append(np.array([]))
+        
+        # 合并边界框
+        new_boxes = np.array(self._merge_mosaic_bboxes(box_datas, cutx, cuty))
+        return rgb_mosaic_image, event_mosaic_image, new_boxes
     
     def _get_random_mosaic(self, indices, input_shape, modality='rgb'):
         """通用 Mosaic 实现"""
@@ -625,6 +856,29 @@ class FusionYoloDataset(Dataset):
             new_boxes = np.concatenate([box_1, box_2], axis=0)
         return new_image, new_boxes
     
+    def get_random_dual_mixup(self, rgb_image_1, event_image_1, box_1, 
+                              rgb_image_2, event_image_2, box_2):
+        """双模态 MixUp 数据增强（同步处理）
+        
+        确保两个模态使用相同的混合比例
+        """
+        # 随机混合比例，但确保两个模态使用相同的比例
+        alpha = self.rand(0.3, 0.7)  # 使用0.3-0.7之间的随机值，而不是固定的0.5
+        
+        # 分别对两个模态进行 MixUp（使用相同的混合比例）
+        new_rgb_image = np.array(rgb_image_1, np.float32) * alpha + np.array(rgb_image_2, np.float32) * (1 - alpha)
+        new_event_image = np.array(event_image_1, np.float32) * alpha + np.array(event_image_2, np.float32) * (1 - alpha)
+        
+        # 合并边界框
+        if len(box_1) == 0:
+            new_boxes = box_2
+        elif len(box_2) == 0:
+            new_boxes = box_1
+        else:
+            new_boxes = np.concatenate([box_1, box_2], axis=0)
+        
+        return new_rgb_image, new_event_image, new_boxes
+    
     def get_target(self, targets):
         """生成训练目标"""
         num_layers = len(self.anchors_mask)
@@ -636,9 +890,13 @@ class FusionYoloDataset(Dataset):
         if len(targets) == 0:
             return y_true
         
+        # 将 anchors 展平为一维数组，便于索引
+        flattened_anchors = self.anchors.reshape(-1, 2)
+        
         for l in range(num_layers):
             in_h, in_w = grid_shapes[l]
-            anchors = np.array(self.anchors) / self.strides[l]
+            # 只使用当前层的 anchors
+            layer_anchors = np.array([flattened_anchors[i] for i in self.anchors_mask[l]]) / self.strides[l]
             
             batch_target = np.zeros_like(targets)
             batch_target[:, [0, 2]] = targets[:, [0, 2]] * in_w
@@ -652,8 +910,9 @@ class FusionYoloDataset(Dataset):
             valid_batch_target = batch_target[valid_mask]
             
             epsilon = 1e-8
-            ratios_of_gt_anchors = np.expand_dims(valid_batch_target[:, 2:4], 1) / (np.expand_dims(anchors, 0) + epsilon)
-            ratios_of_anchors_gt = np.expand_dims(anchors, 0) / (np.expand_dims(valid_batch_target[:, 2:4], 1) + epsilon)
+            # 修复：使用当前层的 anchors 进行计算
+            ratios_of_gt_anchors = np.expand_dims(valid_batch_target[:, 2:4], 1) / (np.expand_dims(layer_anchors, 0) + epsilon)
+            ratios_of_anchors_gt = np.expand_dims(layer_anchors, 0) / (np.expand_dims(valid_batch_target[:, 2:4], 1) + epsilon)
             ratios = np.concatenate([ratios_of_gt_anchors, ratios_of_anchors_gt], axis=-1)
             max_ratios = np.max(ratios, axis=-1)
             
@@ -662,7 +921,7 @@ class FusionYoloDataset(Dataset):
                 over_threshold[np.argmin(ratio)] = True
                 
                 for k, mask in enumerate(self.anchors_mask[l]):
-                    if not over_threshold[mask]:
+                    if not over_threshold[k]:  # 修复：使用 k 而不是 mask
                         continue
                     
                     i = int(np.floor(valid_batch_target[t, 0]))
@@ -677,7 +936,7 @@ class FusionYoloDataset(Dataset):
                             continue
                         
                         if box_best_ratio[l][k, local_j, local_i] != 0:
-                            if box_best_ratio[l][k, local_j, local_i] > ratio[mask]:
+                            if box_best_ratio[l][k, local_j, local_i] > ratio[k]:
                                 y_true[l][k, local_j, local_i, :] = 0
                             else:
                                 continue
@@ -691,7 +950,7 @@ class FusionYoloDataset(Dataset):
                         y_true[l][k, local_j, local_i, 4] = 1
                         y_true[l][k, local_j, local_i, c + 5] = 1
                         
-                        box_best_ratio[l][k, local_j, local_i] = ratio[mask]
+                        box_best_ratio[l][k, local_j, local_i] = ratio[k]  # 修复：使用 k 而不是 mask
         
         return y_true
     

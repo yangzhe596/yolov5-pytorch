@@ -82,9 +82,7 @@ def get_fusion_annotation_path(split='train'):
     Returns:
         Fusion 标注文件的完整路径
     """
-    # Fusion 数据集存储在单独的目录中
-    fusion_dir = 'datasets/fred_fusion'
-    return os.path.join(fusion_dir, 'annotations', f'instances_{split}.json')
+    return os.path.join(FUSION_ROOT, 'annotations', f'instances_{split}.json')
 
 # ============================================================================
 # 数据集配置
@@ -207,11 +205,11 @@ LR_DECAY_TYPE = 'cos'
 # ============================================================================
 
 # Mosaic数据增强
-MOSAIC = False
+MOSAIC = True
 MOSAIC_PROB = 0.5
 
 # MixUp数据增强
-MIXUP = False
+MIXUP = True
 MIXUP_PROB = 0.5
 
 # 特殊数据增强比例（前70%的epoch使用强数据增强）
@@ -240,6 +238,38 @@ PREFETCH_FACTOR = 8          # 每个worker预取4个batch，加速数据流
 PERSISTENT_WORKERS = True    # 保持workers存活，避免epoch间重复创建进程
 
 # ============================================================================
+# Fusion 模型配置
+# ============================================================================
+
+# Fusion 训练模态: 'dual', 'rgb', 'event'
+# - dual: RGB + Event 双模态融合（默认）
+# - rgb: 仅使用 RGB 模态
+# - event: 仅使用 Event 模态
+FUSION_MODALITY = 'dual'
+
+# Fusion 压缩比率 (0.25 ~ 1.0)
+# 控制融合后的特征通道数相对于原始特征的比例
+# - 1.0: 不压缩，保留所有特征
+# - 0.75: 压缩到75%（推荐）
+# - 0.5: 压缩到50%
+# - 0.25: 压缩到25%（最大压缩）
+FUSION_COMPRESSION_RATIO = 0.75
+
+# Fusion 数据集根目录
+FUSION_ROOT = 'datasets/fred_fusion'
+
+# Fusion 训练配置
+FUSION_FREEZE_BATCH_SIZE = 8
+FUSION_UNFREEZE_BATCH_SIZE = 8
+
+# Fusion 评估配置
+FUSION_MAX_EVAL_SAMPLES = 10000  # 最大评估样本数，避免评估时间过长
+
+# Fusion 保存配置
+FUSION_SAVE_PERIOD = 10  # 每10个epoch保存一次模型
+FUSION_EVAL_PERIOD = 5   # 每5个epoch评估一次mAP
+
+# ============================================================================
 # 评估配置
 # ============================================================================
 
@@ -259,7 +289,7 @@ def get_save_dir(modality='rgb'):
     获取保存目录
     
     Args:
-        modality: 'rgb' 或 'event'
+        modality: 'rgb', 'event', 或 'fusion'
     
     Returns:
         保存目录路径
@@ -279,9 +309,38 @@ def get_model_path(modality='rgb', best=True):
     """
     save_dir = get_save_dir(modality)
     if best:
-        return os.path.join(save_dir, 'best_epoch_weights.pth')
+        if modality == 'fusion':
+            return os.path.join(save_dir, 'fred_fusion_best.pth')
+        else:
+            return os.path.join(save_dir, 'best_epoch_weights.pth')
     else:
-        return os.path.join(save_dir, f'fred_{modality}_final.pth')
+        if modality == 'fusion':
+            return os.path.join(save_dir, 'fred_fusion_final.pth')
+        else:
+            return os.path.join(save_dir, f'fred_{modality}_final.pth')
+
+def get_fusion_config():
+    """
+    获取 Fusion 模型配置
+    
+    Returns:
+        Fusion 配置字典
+    """
+    return {
+        'modality': FUSION_MODALITY,
+        'compression_ratio': FUSION_COMPRESSION_RATIO,
+        'freeze_batch_size': FUSION_FREEZE_BATCH_SIZE,
+        'unfreeze_batch_size': FUSION_UNFREEZE_BATCH_SIZE,
+        'max_eval_samples': FUSION_MAX_EVAL_SAMPLES,
+        'save_period': FUSION_SAVE_PERIOD,
+        'eval_period': FUSION_EVAL_PERIOD,
+        'save_dir': get_save_dir('fusion'),
+        'train_annotation': get_fusion_annotation_path('train'),
+        'val_annotation': get_fusion_annotation_path('val'),
+        'test_annotation': get_fusion_annotation_path('test'),
+        'model_path_best': get_model_path('fusion', best=True),
+        'model_path_final': get_model_path('fusion', best=False)
+    }
 
 # ============================================================================
 # 配置验证
@@ -299,6 +358,11 @@ def validate_config():
     if not os.path.exists(COCO_ROOT):
         errors.append(f"COCO数据集根目录不存在: {COCO_ROOT}")
     
+    # 检查Fusion根目录
+    if not os.path.exists(FUSION_ROOT):
+        print(f"警告: Fusion数据集根目录不存在: {FUSION_ROOT}")
+        print("  如果需要训练Fusion模型，请先运行 convert_fred_to_fusion.py")
+    
     # 检查输入尺寸
     if INPUT_SHAPE[0] % 32 != 0 or INPUT_SHAPE[1] % 32 != 0:
         errors.append(f"输入尺寸必须是32的倍数: {INPUT_SHAPE}")
@@ -306,6 +370,14 @@ def validate_config():
     # 检查先验框文件
     if not os.path.exists(ANCHORS_PATH):
         errors.append(f"先验框文件不存在: {ANCHORS_PATH}")
+    
+    # 检查Fusion压缩比率
+    if not (0.25 <= FUSION_COMPRESSION_RATIO <= 1.0):
+        errors.append(f"Fusion压缩比率必须在0.25~1.0之间: {FUSION_COMPRESSION_RATIO}")
+    
+    # 检查Fusion模态
+    if FUSION_MODALITY not in ['dual', 'rgb', 'event']:
+        errors.append(f"Fusion模态必须是 'dual', 'rgb', 或 'event': {FUSION_MODALITY}")
     
     # 高分辨率模式特定检查
     if HIGH_RES:
@@ -324,6 +396,14 @@ def validate_config():
         print(f"  - 锚点掩码: {ANCHORS_MASK}")
         print(f"  - 特征层: 80x80, 40x40, 20x20")
         print(f"  - 输入尺寸: {INPUT_SHAPE}")
+    
+    # Fusion配置检查
+    print("\nFusion配置:")
+    print(f"  - 训练模态: {FUSION_MODALITY}")
+    print(f"  - 压缩比率: {FUSION_COMPRESSION_RATIO}")
+    print(f"  - 冻结批次大小: {FUSION_FREEZE_BATCH_SIZE}")
+    print(f"  - 解冻批次大小: {FUSION_UNFREEZE_BATCH_SIZE}")
+    print(f"  - 最大评估样本数: {FUSION_MAX_EVAL_SAMPLES}")
     
     return errors
 

@@ -663,39 +663,86 @@ def set_optimizer_lr(optimizer, lr_scheduler_func, epoch):
         param_group['lr'] = lr
 
 if __name__ == "__main__":
-    # 其他配置
-    fred_root = "/mnt/data/datasets/fred"
-    
-    # 全局配置
-    globals().update(vars(config_fred))
-    
     # 初始化
     seed_everything(1)
     
     # 获取训练配置
     cfg = config_fred
     
-    # === 核心配置 ===
+    # === 获取配置 ===
     
-    # 显卡配置
-    Cuda            = True
-    fp16            = False
-
-    # 数据集和类别配置
-    num_classes     = config_fred.NUM_CLASSES
-    class_names     = config_fred.CLASS_NAMES
-    anchors_path    = 'model_data/yolo_anchors.txt'
+    # 从配置文件获取基本配置
+    Cuda = cfg.CUDA
+    fp16 = cfg.FP16
+    num_classes = cfg.NUM_CLASSES
+    class_names = cfg.CLASS_NAMES
+    anchors_path = cfg.ANCHORS_PATH
+    backbone = cfg.BACKBONE
+    phi = cfg.PHI
+    high_res = cfg.HIGH_RES
+    
+    # 从配置文件获取训练配置
+    Init_Epoch = cfg.INIT_EPOCH
+    Freeze_Epoch = cfg.FREEZE_EPOCH
+    UnFreeze_Epoch = cfg.UNFREEZE_EPOCH
+    
+    # 从配置文件获取优化器配置
+    optimizer_type = cfg.OPTIMIZER_TYPE
+    Init_lr = cfg.INIT_LR
+    Min_lr = cfg.MIN_LR
+    momentum = cfg.MOMENTUM
+    weight_decay = cfg.WEIGHT_DECAY
+    lr_decay_type = cfg.LR_DECAY_TYPE
+    
+    # 从配置文件获取数据增强配置
+    mosaic = cfg.MOSAIC
+    mosaic_prob = cfg.MOSAIC_PROB
+    mixup = cfg.MIXUP
+    mixup_prob = cfg.MIXUP_PROB
+    
+    # 从配置文件获取评估配置
+    confidence = cfg.CONFIDENCE
+    nms_iou = cfg.NMS_IOU
+    MINOVERLAP = cfg.MINOVERLAP
+    max_boxes = cfg.MAX_BOXES
+    letterbox_image = cfg.LETTERBOX_IMAGE
+    
+    # 从配置文件获取数据加载配置
+    num_workers = cfg.NUM_WORKERS
+    prefetch_factor = cfg.PREFETCH_FACTOR
+    persistent_workers = cfg.PERSISTENT_WORKERS
+    
+    # 获取 Fusion 特有配置
+    fusion_cfg = cfg.get_fusion_config()
+    fusion_modality = fusion_cfg['modality']
+    compression_ratio = fusion_cfg['compression_ratio']
+    Freeze_batch_size = fusion_cfg['freeze_batch_size']
+    Unfreeze_batch_size = fusion_cfg['unfreeze_batch_size']
+    eval_period = fusion_cfg['eval_period']
+    save_period = fusion_cfg['save_period']
+    max_eval_samples = fusion_cfg['max_eval_samples']
+    
+    # Fusion 标注文件路径
+    train_json = fusion_cfg['train_annotation']
+    val_json = fusion_cfg['val_annotation']
+    test_json = fusion_cfg['test_annotation']
+    
+    # Fusion 模型保存目录
+    save_dir = fusion_cfg['save_dir']
+    
+    # 其他配置
+    fred_root = cfg.get_fred_root()
     
     # 命令行参数
     parser = argparse.ArgumentParser(description='FRED Fusion 数据集训练')
-    parser.add_argument('--modality', type=str, default='dual', choices=['dual', 'rgb', 'event'],
-                        help='训练模态: dual(双模态), rgb, event')
-    parser.add_argument('--compression_ratio', type=float, default=0.75,
-                        help='融合压缩比率 (0.25~1.0), 推荐 0.75')
+    parser.add_argument('--modality', type=str, default=fusion_modality, choices=['dual', 'rgb', 'event'],
+                        help=f'训练模态: dual(双模态), rgb, event (默认: {fusion_modality})')
+    parser.add_argument('--compression_ratio', type=float, default=compression_ratio,
+                        help=f'融合压缩比率 (0.25~1.0), 推荐 0.75 (默认: {compression_ratio})')
     parser.add_argument('--freeze_training', action='store_true',
                         help='仅进行冻结训练（不进行解冻训练）')
-    parser.add_argument('--high_res', action='store_true',
-                        help='启用高分辨率模式')
+    parser.add_argument('--high_res', action='store_true', default=high_res,
+                        help=f'启用高分辨率模式 (默认: {high_res})')
     parser.add_argument('--no_eval_map', action='store_true',
                         help='禁用 mAP 评估，加快训练速度')
     parser.add_argument('--resume', action='store_true',
@@ -706,80 +753,24 @@ if __name__ == "__main__":
                         help='只进行评估，不训练')
     args = parser.parse_args()
     
+    # 命令行参数覆盖配置文件
+    fusion_modality = args.modality
+    compression_ratio = args.compression_ratio
+    high_res = args.high_res
+    
     # 默认评估模式
-    default_eval_mode = True
+    default_eval_mode = cfg.EVAL_FLAG
     
     if args.no_eval_map:
         print("\n⚠️  注意: mAP 评估已禁用（使用 --no_eval_map 禁用，默认启用）")
         default_eval_mode = False
-        eval_callback = SimplifiedEvalCallback(cfg.get_save_dir('fusion'), eval_flag=False, period=1)
+        eval_callback = SimplifiedEvalCallback(save_dir, eval_flag=False, period=1)
     else:
         # 使用 COCO 格式的 mAP 评估（需要 JSON 文件）
         print("\n✓ 使用COCO格式的mAP评估（会增加训练时间）")
     
-    # 设置训练模态
-    fusion_modality = args.modality
-    
-    # 设置压缩比率
-    compression_ratio = args.compression_ratio
-    
-    # Fusion 标注文件路径
-    train_json = config_fred.get_fusion_annotation_path('train')
-    val_json   = config_fred.get_fusion_annotation_path('val')
-    test_json  = config_fred.get_fusion_annotation_path('test')
-    
-    # Fusion 模型保存目录
-    save_dir = config_fred.get_save_dir('fusion')
-    
-    # 高分辨率模式配置
-    high_res = args.high_res
-    
-    # 模型配置
-    backbone    = 'cspdarknet'
-    phi         = 's'
-    
-    # 训练配置
-    Init_Epoch          = 0
-    Freezed_Epoch       = 1
-    UnFreeze_Epoch      = 300
-    
-    eval_period         = 5  # 每 5 个 epoch 评估一次 mAP
-    save_period         = 10 # 每 10 个 epoch 保存一次模型
-    
-    Freeze_batch_size   = 8
-    Unfreeze_batch_size = 8
-    
-    # 优化器和学习率
-    optimizer_type      = 'sgd'
-    Init_lr             = 1e-2
-    momentum            = 0.937
-    weight_decay        = 5e-4
-    lr_decay_type       = 'cos'
-    
-    # 最小学习率
-    Min_lr = Init_lr * 0.01
-    
-    # mAP 评估配置
-    max_boxes           = 300
-    confidence          = 0.001
-    nms_iou             = 0.5
-    letterbox_image     = True
-    MINOVERLAP          = 0.5
-    max_eval_samples    = 10000  # 最大评估样本数
-    
-    # 训练参数
-    num_workers         = 4
-    prefetch_factor     = 4
-    persistent_workers  = True
-    
-    # 数据增强
-    mosaic              = False
-    mosaic_prob         = 0.5
-    mixup               = False
-    mixup_prob          = 0.5
-    
     # 冻结训练
-    Freeze_Train        = True
+    Freeze_Train = cfg.FREEZE_TRAIN
     
     # 简化模式 - 快速验证
     if args.quick_test:
@@ -802,20 +793,21 @@ if __name__ == "__main__":
             print("将使用默认的预训练权重路径")
             model_path = f"model_data/yolov5{phi}.pth"
     else:
-        model_path = 'logs/fred_fusion/fred_fusion_best.pth'
+        model_path = fusion_cfg['model_path_best']
+        if not os.path.exists(model_path):
+            print(f"警告: Fusion 预训练权重不存在 {model_path}")
+            print("将使用 RGB 模态作为预训练权重")
+            model_path = cfg.get_model_path('rgb', best=True)
     
-    # 获取 anchors
-    anchors, num_anchors = get_anchors(anchors_path)
+    # 获取 anchors 和输入尺寸
+    input_shape = cfg.INPUT_SHAPE
+    anchors_mask = cfg.ANCHORS_MASK
     
-    # 设置网络输入尺寸和先验框
-    if not high_res:
-        input_shape = [640, 640]
-        anchors_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
-    else:
-        input_shape = [640, 640]  # 实际还是640，但使用高分辨率模式的 anchors
+    # 高分辨率模式可能需要不同的 anchors
+    if high_res:
         anchors_path = 'model_data/yolo_anchors_high_res.txt'
-        anchors, num_anchors = get_anchors(anchors_path)
-        anchors_mask = [[6, 7, 8], [3, 4, 5], [0, 1, 2]]
+    
+    anchors, num_anchors = get_anchors(anchors_path)
     
     # === 数据集准备 ===
     
@@ -837,7 +829,7 @@ if __name__ == "__main__":
     fusion_train_set = FusionYoloDataset(
         train_json, fred_root, input_shape, num_classes, anchors, anchors_mask,
         epoch_length=max(train_num // Freeze_batch_size, 1), 
-        mosaic=True, mixup=True, mosaic_prob=cfg.MOSAIC_PROB, mixup_prob=cfg.MIXUP_PROB, train=True,
+        mosaic=mosaic, mixup=mixup, mosaic_prob=mosaic_prob, mixup_prob=mixup_prob, train=True,
         modality=fusion_modality, use_fusion_info=True
     ) if not args.eval_only else None
     
@@ -1025,7 +1017,7 @@ if __name__ == "__main__":
         model_path=model_path,
         input_shape=input_shape,
         Init_Epoch=Init_Epoch,
-        Freeze_Epoch=Freezed_Epoch if Freeze_Train else 0,
+        Freeze_Epoch=Freeze_Epoch if Freeze_Train else 0,
         UnFreeze_Epoch=UnFreeze_Epoch if Freeze_Train else 0,
         Freeze_batch_size=Freeze_batch_size,
         Unfreeze_batch_size=Unfreeze_batch_size,
@@ -1072,9 +1064,9 @@ if __name__ == "__main__":
         
         for epoch in range(Init_Epoch, UnFreeze_Epoch):
             # 解冻训练
-            if epoch >= Freezed_Epoch and not UnFreeze_flag and Freeze_Train and not args.freeze_training and not args.quick_test:
+            if epoch >= Freeze_Epoch and not UnFreeze_flag and Freeze_Train and not args.freeze_training and not args.quick_test:
                 print("\n" + "="*80)
-                print("第二阶段：解冻训练 (%d-%d epoch)" % (Freezed_Epoch, UnFreeze_Epoch))
+                print("第二阶段：解冻训练 (%d-%d epoch)" % (Freeze_Epoch, UnFreeze_Epoch))
                 print("="*80)
                 print("  - 解冻主干网络，全网络训练")
                 print("  - 显存占用较大")
@@ -1138,10 +1130,10 @@ if __name__ == "__main__":
                 UnFreeze_flag = True
             
             # 冻结训练阶段
-            elif epoch < Freezed_Epoch and Freeze_Train and not args.freeze_training and not args.quick_test:
+            elif epoch < Freeze_Epoch and Freeze_Train and not args.freeze_training and not args.quick_test:
                 if epoch == Init_Epoch:
                     print("\n" + "="*80)
-                    print("第一阶段：冻结训练 (0-%d epoch)" % Freezed_Epoch)
+                    print("第一阶段：冻结训练 (0-%d epoch)" % Freeze_Epoch)
                     print("="*80)
                     print("  - 冻结主干网络，只训练检测头")
                     print("  - 显存占用较小")
@@ -1192,6 +1184,6 @@ if __name__ == "__main__":
     print("="*80)
     print("\n模型保存位置: " + save_dir)
     print("日志保存位置: " + save_dir)
-    print("\n最佳模型: logs/fred_fusion/fred_fusion_best.pth")
-    print("最终模型: logs/fred_fusion/fred_fusion_final.pth")
+    print(f"\n最佳模型: {fusion_cfg['model_path_best']}")
+    print(f"最终模型: {fusion_cfg['model_path_final']}")
     print("\n" + "="*80)
